@@ -1628,10 +1628,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         })?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err(TokenSaveError::Config {
-            message: format!(
-                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
-                canonical_root.display()
-            ),
+            message: "tokensave_read: path resolves outside selected graph root; choose a repository file or use the host's authorized reader for external files".to_string(),
         });
     }
     // Map/signatures look symbols up by this path, so it must be the exact
@@ -1641,10 +1638,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     // Windows) and the raw `file` may carry `./`, `..` or backslashes.
     let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
         TokenSaveError::Config {
-            message: format!(
-                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
-                canonical_root.display()
-            ),
+            message: "tokensave_read: path resolves outside selected graph root; choose a repository file or use the host's authorized reader for external files".to_string(),
         }
     })?;
     // `.git` holds repository metadata, not source, and `.git/config` can
@@ -1770,7 +1764,11 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
 
 /// Handles `tokensave_entities` — flat symbol map for a file with optional
 /// `kinds` filter.
-pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+pub(super) async fn handle_outline(
+    cg: &TokenSave,
+    args: Value,
+    session: Option<&super::SessionState>,
+) -> Result<ToolResult> {
     use crate::context::read_modes::render_map;
 
     let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
@@ -1810,13 +1808,16 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
         obj.insert("has_doc".to_string(), json!(!doc_paths.is_empty()));
         if !doc_paths.is_empty() {
             obj.insert("doc_path".to_string(), json!(doc_paths));
-            obj.insert(
-                "doc_hint".to_string(),
-                json!(format!(
-                    "call {} for the summary before reading this file",
-                    crate::mcp::tools::reachable_tool_name("tokensave_doc")
-                )),
-            );
+            // No hint when the session cannot list the tool: `doc_path`
+            // still names the documents.
+            if let Some(tool) = super::reachable_tool(session, "tokensave_doc") {
+                obj.insert(
+                    "doc_hint".to_string(),
+                    json!(format!(
+                        "call {tool} for the summary before reading this file"
+                    )),
+                );
+            }
         }
     }
     let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();

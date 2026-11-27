@@ -426,6 +426,24 @@ portable string formats, and documented path-syntax test fixtures.
   `doctor` reports the interval and last result. See [docs/DATABASE-INTEGRITY.md](docs/DATABASE-INTEGRITY.md).
 - Focused tests: `cargo test --test integration integrity_test::`.
   This guidance is branch-specific until merged; beta lacks this implementation.
+## Experimental SCIP comparison (master candidate)
+
+- `tokensave scip-compare` (#1100) requires `"enable_scip": true` in the project
+  configuration and reads the SCIP index and graph read-only:
+  no sync, migration or database write. Keep its index, document, string and
+  source-size bounds, the per-document freshness checks, and the refusal of a
+  foreign `project_root` without `--rebase-root`. It holds the sync lock for
+  its whole run, so it never reads a mid-sync graph. Its SQL is listed in
+  `docs/QUERY-REPORT.md` (Q0427–Q0431).
+- Run `cargo test --lib scip::` and
+  `cargo test --test integration scip_compare_test::` for focused checks.
+  Regenerate the fixture index with `scripts/scip/regenerate.sh` (needs a
+  rust-analyzer with the `scip` subcommand); see
+  [the evaluation](docs/scip/README.md). The evaluation also documents
+  `scripts/scip/import_preview.py`, which applies the plan only to a fresh
+  disposable fixture graph and measures storage and incoming-edge queries.
+  This candidate guidance is
+  branch-specific until the implementation is merged.
 
 ## Architecture
 
@@ -470,7 +488,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - Env-var policy: tokensave-owned variables must start with `TOKENSAVE_`; enforced by `tests/env_var_namespace_test.rs`. External (OS/Cargo/git/agent) vars need an explicit allowlist rationale. Never print env-var values (some carry auth material).
 - `TOKENSAVE_LOG` controls structured stderr diagnostics (off by default). `--log-level` and `--debug` override it. Keep fields allowlisted and review hook and MCP stdout isolation when adding events. See [Debug diagnostics](docs/guide/TROUBLESHOOTING.md#debug-diagnostics).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.
-- `TOKENSAVE_DISABLE_GREP_HOOK=1` — opt out of the Claude PreToolUse grep guardrail (useful for headless/subagent dispatch).
+- `TOKENSAVE_DISABLE_GREP_HOOK=1` — suppress Claude Bash search advice with an inline assignment, or opt out of the Claude PreToolUse guardrail in the environment that launches the session.
 - `TOKENSAVE_TELEMETRY` (falsey value) or `DO_NOT_TRACK` (any value but `0`/`false`/`no`/`off`/empty) — turns the worldwide counter off: no upload, total or flags request and no pending accumulation (#1066). The gate is `cloud::telemetry_enabled`; route any new telemetry call through it. Env can only disable, never re-enable `upload_enabled`.
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).
 - `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.

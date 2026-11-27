@@ -1287,55 +1287,70 @@ impl TokenSave {
         crate::resolution::emit_variant_edges(&groups, &edges)
     }
 
+    /// Sync stale files (or the whole index after an extractor dispatch
+    /// change) without reporting progress. A live peer's sync lock is waited
+    /// out for a bounded time; if it is still held, the call returns `Ok`
+    /// without refreshing. Genuine lock failures are returned as errors.
     pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
+        self.refresh_if_stale_bounded(stale_files, SyncLockWaitPolicy::default())
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Self::sync_if_stale_silent`] with explicit wait bounds, reporting
+    /// whether the refresh happened or the wait timed out (#1123).
+    pub(crate) async fn refresh_if_stale_bounded(
+        &self,
+        stale_files: &[String],
+        policy: SyncLockWaitPolicy,
+    ) -> Result<RefreshOutcome> {
         if self.dispatch_changed().await? {
-            return self
-                .sync_with_progress_internal(|_, _, _| {}, |_| {}, true)
-                .await
-                .map(|_| ());
+            return match acquire_sync_lock_bounded(&self.project_root, policy).await? {
+                SyncLockWait::TimedOut { holder_pid } => {
+                    Ok(RefreshOutcome::LockTimedOut { holder_pid })
+                }
+                SyncLockWait::Acquired { guard, .. } => {
+                    // A peer may have applied the new dispatch while we waited.
+                    if !self.dispatch_changed().await? {
+                        return Ok(RefreshOutcome::PeerRefreshed);
+                    }
+                    self.sync_with_lock(guard, |_, _, _| {}, |_| {}, true)
+                        .await?;
+                    Ok(RefreshOutcome::Refreshed)
+                }
+            };
         }
         if stale_files.is_empty() {
-            return Ok(());
+            return Ok(RefreshOutcome::Refreshed);
         }
         // Normalize once at the entry — see `sync_if_stale` and #87.
         let stale_files = normalize_rel_paths(stale_files);
 
         let still_stale_before = self.check_file_staleness(&stale_files).await;
         if still_stale_before.is_empty() {
-            return Ok(());
+            return Ok(RefreshOutcome::Refreshed);
         }
 
-        let lock = if let Ok(lock) = try_acquire_sync_lock(&self.project_root) {
-            lock
-        } else {
-            // Peer is syncing. Wait for them to release the lock so the
-            // caller (e.g. the MCP server's refresh hook) sees the
-            // post-sync DB state — returning early here leaves the caller
-            // refreshing against pre-sync data and silently dropping the
-            // update on the floor.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                if Instant::now() >= deadline {
-                    // Peer is stuck or crashed — best-effort, give up.
-                    return Ok(());
+        // If a peer is syncing, wait for it to release the lock so the caller
+        // (e.g. the MCP server's refresh hook) sees the post-sync DB state —
+        // returning early would leave the caller refreshing against pre-sync
+        // data and silently drop the update.
+        let lock = match acquire_sync_lock_bounded(&self.project_root, policy).await? {
+            SyncLockWait::TimedOut { holder_pid } => {
+                return Ok(RefreshOutcome::LockTimedOut { holder_pid })
+            }
+            SyncLockWait::Acquired { guard, contended } => {
+                // If the peer covered our files, the DB is fresh.
+                if contended && self.check_file_staleness(&stale_files).await.is_empty() {
+                    return Ok(RefreshOutcome::PeerRefreshed);
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                if let Ok(lock) = try_acquire_sync_lock(&self.project_root) {
-                    // Peer released. If they covered our files, the DB is
-                    // fresh and we're done; otherwise sync ourselves.
-                    let still_stale = self.check_file_staleness(&stale_files).await;
-                    if still_stale.is_empty() {
-                        drop(lock);
-                        return Ok(());
-                    }
-                    break lock;
-                }
+                guard
             }
         };
 
         let _ = self.sync_single_files(&stale_files).await;
         drop(lock);
-        Ok(())
+        Ok(RefreshOutcome::Refreshed)
     }
 
     /// Whether the project-relative `path` lies below a linked worktree that
@@ -1611,13 +1626,67 @@ impl TokenSave {
 
     /// Checkout transitions must compare content even when Git restores the
     /// same timestamp and size. Extraction remains limited to changed files.
+    /// Fails at once on a live sync lock; the MCP runtime uses
+    /// [`Self::sync_branch_context_bounded`].
+    #[cfg(test)]
     pub(crate) async fn sync_branch_context(&self) -> Result<SyncResult> {
         self.sync_with_progress_internal(|_, _, _| {}, |_| {}, true)
             .await
     }
 
+    /// Branch-transition sync that waits (bounded) for a live peer's sync lock
+    /// instead of failing on it (#1123).
+    ///
+    /// When a peer held the lock and synced this database meanwhile, the
+    /// transition is not repeated unless files are still stale or extractor
+    /// dispatch still differs. The peer's sync detects changes by timestamp
+    /// and size, which a Git checkout updates for every file it rewrites.
+    pub(crate) async fn sync_branch_context_bounded(
+        &self,
+        policy: SyncLockWaitPolicy,
+    ) -> Result<RefreshOutcome> {
+        let synced_before = self.last_sync_timestamp().await;
+        let (guard, contended) = match acquire_sync_lock_bounded(&self.project_root, policy).await?
+        {
+            SyncLockWait::Acquired { guard, contended } => (guard, contended),
+            SyncLockWait::TimedOut { holder_pid } => {
+                return Ok(RefreshOutcome::LockTimedOut { holder_pid })
+            }
+        };
+        if contended
+            && self.last_sync_timestamp().await != synced_before
+            && !self.dispatch_changed().await?
+            && matches!(
+                self.find_stale_files_bounded().await,
+                AutoSyncScope::Sync(ref stale) if stale.is_empty()
+            )
+        {
+            return Ok(RefreshOutcome::PeerRefreshed);
+        }
+        self.sync_with_lock(guard, |_, _, _| {}, |_| {}, true)
+            .await?;
+        Ok(RefreshOutcome::Refreshed)
+    }
+
     async fn sync_with_progress_internal<F, V>(
         &self,
+        on_progress: F,
+        on_verbose: V,
+        branch_transition: bool,
+    ) -> Result<SyncResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
+        let lock = try_acquire_sync_lock(&self.project_root)?;
+        self.sync_with_lock(lock, on_progress, on_verbose, branch_transition)
+            .await
+    }
+
+    /// The sync body. `_lock` is the caller's sync lock, held until return.
+    pub(super) async fn sync_with_lock<F, V>(
+        &self,
+        _lock: SyncLockGuard,
         on_progress: F,
         on_verbose: V,
         branch_transition: bool,
@@ -1634,7 +1703,6 @@ impl TokenSave {
             self.project_root.is_dir(),
             "sync: project root is not a directory"
         );
-        let _lock = try_acquire_sync_lock(&self.project_root)?;
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();

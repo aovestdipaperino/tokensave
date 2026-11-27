@@ -83,6 +83,7 @@ unchanged.
 
 - SQL-bearing source files: **42**.
 - SQL literal/template occurrences: **386**.
+- SQL literal/template occurrences: **388**.
 - Functions retained for construction/binding context: **183**.
 
 ## Source file index
@@ -125,6 +126,7 @@ unchanged.
 | [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
+| [src/scip/compare.rs](../src/scip/compare.rs) | 5 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
 | [src/tokensave/rename.rs](../src/tokensave/rename.rs) | 3 |
 | [src/tokensave/runtime.rs](../src/tokensave/runtime.rs) | 2 |
@@ -2024,7 +2026,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1471](../src/db/queries/edges.rs#L1471).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2034,6 +2036,7 @@ SELECT id, kind, name, qualified_name, file_path,
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                        AND {path_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1
@@ -2041,7 +2044,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1487](../src/db/queries/edges.rs#L1487).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2051,28 +2054,30 @@ SELECT id, kind, name, qualified_name, file_path,
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1
 ```
 
-#### Q0130 — `get_god_classes`
+#### Q0130 — `get_god_classes_filtered`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1585](../src/db/queries/edges.rs#L1585).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                    SUM(CASE WHEN c.kind IN ('field', 'val', 'var') THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
              FROM nodes n
              JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+             WHERE n.kind IN ({kind_placeholders})
                {path_filter}
              GROUP BY n.id
+             {having_clause}
              ORDER BY total DESC
-             LIMIT ?1
+             LIMIT ?{limit_param_idx}
 ```
 
 #### Q0131 — `get_all_edges`
@@ -2620,7 +2625,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0196 — `get_all_nodes_for_resolution`
 
-Source: [src/db/queries/nodes.rs:1045](../src/db/queries/nodes.rs#L1045).
+Source: [src/db/queries/nodes.rs:1049](../src/db/queries/nodes.rs#L1049).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2632,6 +2637,10 @@ SELECT id, kind, name, qualified_name, file_path,
                          WHEN file_path LIKE '%.cs'
                               AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
                                            'function', 'method', 'field', 'csharp_property')
+                         THEN signature
+                         WHEN file_path LIKE '%.swift'
+                              AND kind IN ('class', 'struct', 'enum', 'interface', 'extension',
+                                           'function', 'method', 'constructor')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
@@ -3778,9 +3787,9 @@ SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e 
 
 ### src/hooks.rs
 
-#### Q0302 — `is_symbol_indexed`
+#### Q0302 — `probe_indexed_symbol`
 
-Source: [src/hooks.rs:410](../src/hooks.rs#L410).
+Source: [src/hooks.rs:440](../src/hooks.rs#L440).
 
 ```sql
 SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1
@@ -9736,9 +9745,9 @@ Source: [src/db/queries/nodes.rs:992](../src/db/queries/nodes.rs#L992).
     }
 ```
 
-### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1041
+### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1045
 
-Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
+Source: [src/db/queries/nodes.rs:1045](../src/db/queries/nodes.rs#L1045).
 
 ```rust
     pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
@@ -9754,6 +9763,10 @@ Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
                          WHEN file_path LIKE '%.cs'
                               AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
                                            'function', 'method', 'field', 'csharp_property')
+                         THEN signature
+                         WHEN file_path LIKE '%.swift'
+                              AND kind IN ('class', 'struct', 'enum', 'interface', 'extension',
+                                           'function', 'method', 'constructor')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes",
@@ -11879,19 +11892,21 @@ Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
     }
 ```
 
-### `is_symbol_indexed` — src/hooks.rs:401
+### `probe_indexed_symbol` — src/hooks.rs:433
 
-Source: [src/hooks.rs:401](../src/hooks.rs#L401).
+Source: [src/hooks.rs:433](../src/hooks.rs#L433).
+
+The read-only probe binds the lowercase symbol name. Claude Bash advice
+requires a successful hit. The existing redirect paths treat a probe failure
+as an eligible symbol.
 
 ```rust
-fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
-    let Some(root) = env.project_root.as_deref() else {
-        return true;
-    };
+fn probe_indexed_symbol(env: &HookEnv, symbol: &str) -> Option<bool> {
+    let root = env.project_root.as_deref()?;
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
-        return true;
+        log_index_probe("wal_refused");
+        return None;
     }
     let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
     let name = symbol.to_lowercase();
@@ -11917,7 +11932,12 @@ fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
             .ok()
             .and_then(|rt| rt.block_on(probe).ok()),
     };
-    ran.unwrap_or(true)
+    log_index_probe(match ran {
+        Some(true) => "symbol_found",
+        Some(false) => "symbol_absent",
+        None => "index_unavailable",
+    });
+    ran
 }
 ```
 
@@ -13745,3 +13765,68 @@ snapshot per statement. Stream rows, retain at most 100 diagnostics truncated to
 1,024 bytes each, require an `ok` row and no diagnostics for success. SQL errors
 produce incomplete checks. The owning process enforces a five-second lifetime;
 all results/connections are released on completion or process termination.
+## SCIP comparison additions (Refs #1100)
+
+Source: [src/scip/compare.rs](../src/scip/compare.rs), `compare`. This section
+adds five occurrences and one construction/binding context to the existing
+inventory. No existing query was changed, moved or removed. Snapshot inspected
+2026-11-24. The comparison opens the branch database found by
+`graphify::database_path` read-only, after `compatibility::preflight`, like the
+Graphify export. The transaction API owns BEGIN and rollback on drop; the
+transaction is dropped without COMMIT because nothing is written.
+
+#### Q0427 — `compare`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0428 — `compare`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the comparison never migrates.
+
+#### Q0429 — `compare`: Per-document graph freshness
+
+```sql
+SELECT content_hash FROM files WHERE path=?1 AND kind='code'
+```
+
+?1 is a SCIP document's relative path after it has been checked to be a safe
+relative path inside the canonical project root. At most one row; it is
+compared with the content hash of the bounded (16 MiB) UTF-8 source. A missing
+row or a different hash skips the document. When the SCIP document embeds
+source text, its hash must also match the current source.
+
+#### Q0430 — `compare`: Nodes of a verified document
+
+```sql
+SELECT id, name, kind, qualified_name, start_line, end_line FROM nodes WHERE file_path=?1
+```
+
+?1 is a document that passed Q0429 and the SCIP source and range checks. Runs once per
+such document; rows are kept in memory to map SCIP definitions and to find the
+node enclosing each reference.
+
+#### Q0431 — `compare`: Outgoing non-containment edges of a document
+
+```sql
+SELECT e.source, e.kind, e.line, e.resolved_by, t.name, t.qualified_name, t.file_path FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path = ?1 AND e.kind != 'contains'
+```
+
+?1 is a document that passed Q0429; runs once per verified document after all
+of them are loaded. The nullable `resolved_by` code is decoded with
+`ResolvedBy::from_code`; rows without a line are counted and not classified.
+Targets are compared by qualified name, so a type and its `impl` nodes match.
+
+Construction context: SQL templates are fixed; only the document path is
+bound, and no index or user text is interpolated. Q0428–Q0431 share one read
+transaction for a consistent snapshot. Document count is bounded by the SCIP
+decoder's document limit and the index-size limit. No migrations or writes
+occur.

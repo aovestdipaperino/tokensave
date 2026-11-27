@@ -16,6 +16,10 @@ Cargo recorded in the published package, with a `-dirty` suffix if the
 package was made from uncommitted changes. When neither is available, as in a
 source archive without that record, the commit is `unknown`.
 
+Use `tokensave tool --help` or `tokensave help tool` for the tool subcommand's
+help, and `tokensave tool <name> --help` for a specific tool's parameters.
+Place global diagnostics flags before the tool name.
+
 ```bash
 tokensave --version                # Print the installed version
 tokensave --version --verbose      # Include build metadata
@@ -42,6 +46,7 @@ tokensave cost --by-agent          # Cost grouped by supported agent
 tokensave cost --by-model          # Cost grouped by model
 tokensave cost --by-task           # Cost grouped by task category
 tokensave cost --export json|csv   # Export cost data
+tokensave discover [--since RANGE] [--json]  # Navigation turns a tokensave query could have served (default: 30d)
 tokensave gain [--all] [--range R] [--json]   # Tokens saved by MCP calls (default: this project, 30d)
 tokensave gain --history           # Tokens saved per day
 tokensave gain --by-tool           # Calls and tokens saved per tool
@@ -75,6 +80,7 @@ tokensave okf export --output <dir> [--project P]  # Export the code index as an
 tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
 tokensave okf list [--json] [--project P]          # List imported bundles
 tokensave okf remove <name> [--project P]          # Remove an imported bundle
+tokensave scip-compare --index <file.scip> [--rebase-root] [--project P]  # Experimental, read-only
 ```
 
 Verbose version output includes the build commit, Cargo build profile, target
@@ -83,6 +89,22 @@ triple and Rust compiler version. Values unavailable at build time are shown as
 command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
+
+`scip-compare` is an experimental, read-only prototype. It appears in CLI help and is disabled by default. Set
+`"enable_scip": true` in the project’s `.tokensave/config.json` to enable
+comparison. A missing setting or `false` disables it. The command reads a
+[SCIP](https://github.com/sourcegraph/scip) index from an external indexer,
+such as `rust-analyzer scip` or `scip-typescript`, and prints a JSON report that classifies
+the graph's edges as confirmed, contradicted or unverifiable. It also lists
+the references the graph lacks, as a dry-run import plan. It never writes the
+index. It refuses to run while a sync of the same project is in progress,
+and holds the sync lock while it runs. An index whose `project_root` names
+another directory needs `--rebase-root`. Each document is checked against the
+current sources, including a hash comparison when the SCIP index contains
+document text. Stale, unindexed or malformed documents are skipped and
+counted. See the
+[SCIP evaluation](https://github.com/aovestdipaperino/tokensave/blob/master/docs/scip/README.md)
+for the format mapping, limits, and write-enabled fixture experiment.
 
 ## Dependency advisory reachability
 
@@ -181,6 +203,14 @@ See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent g
 | `TOKENSAVE_CAVEMAN_COMPATIBILITY` | environment | Overrides `caveman_compatibility` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
 `tokensave init` reports an installed Caveman skill and, while the setting is off, how to turn it on; it never changes the setting. See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
+
+## Settings for the listed tools
+
+| Setting | Where | Effect |
+|---|---|---|
+| `disabled_tool_areas` | `~/.tokensave/config.toml` | Empty (default): no tool area is turned off. A list of area names (`analysis`, `edit`, `git`, `memory`, `navigate`), such as `["memory"]`: the MCP server lists no tool of those areas and `tokensave_more` does not offer them. A call to such a tool does not run and answers that the tool is disabled. Read when the MCP server starts. |
+
+See [MCP tools](MCP-TOOLS.md) for the areas and the toolset setting.
 
 ## Settings for the state location
 

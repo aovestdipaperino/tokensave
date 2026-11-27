@@ -78,6 +78,8 @@ pub mod vulnerability;
 
 /// Experimental Graphify file interchange.
 pub mod graphify;
+/// Experimental, read-only SCIP index comparison (#1100).
+pub mod scip;
 
 /// Open Knowledge Format (OKF) bundle validation and export (#858).
 pub mod okf;

@@ -53,17 +53,25 @@ fn halstead_diff_for(n: &crate::types::Node) -> f64 {
 /// or a symbol *name* passed where an ID is expected (the #109 CLI nit:
 /// `tokensave tool callers Helper`) read like clean answers. Fail loudly and
 /// point at the name-based lookups instead.
-async fn require_existing_node(cg: &TokenSave, node_id: &str) -> Result<Node> {
-    cg.get_node(node_id)
-        .await?
-        .ok_or_else(|| TokenSaveError::Config {
+///
+/// The message names `tokensave_callers_for` only when the session can list
+/// it.
+async fn require_existing_node(
+    cg: &TokenSave,
+    node_id: &str,
+    session: Option<&super::SessionState>,
+) -> Result<Node> {
+    cg.get_node(node_id).await?.ok_or_else(|| {
+        let by_name = super::reachable_tool(session, "tokensave_callers_for")
+            .map_or_else(String::new, |tool| format!("{tool} or "));
+        TokenSaveError::Config {
             message: format!(
                 "node not found: '{node_id}'. `node_id` expects a graph node ID \
-                 (e.g. from tokensave_search results); to look up by symbol name \
-                 use {} or tokensave_search.",
-                crate::mcp::tools::reachable_tool_name("tokensave_callers_for")
+                     (e.g. from tokensave_search results); to look up by symbol name \
+                     use {by_name}tokensave_search."
             ),
-        })
+        }
+    })
 }
 
 /// Handles `tokensave_search` tool calls.
@@ -732,18 +740,40 @@ async fn handle_literal_search(
     })
 }
 
+fn context_task(args: &Value) -> Result<&str> {
+    let parse = |key| {
+        args.get(key)
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
+                    .ok_or_else(|| TokenSaveError::Config {
+                        message: format!("tokensave_context: '{key}' must be a non-empty string"),
+                    })
+            })
+            .transpose()
+    };
+    match (parse("task")?, parse("query")?) {
+        (Some(task), Some(query)) if task != query => Err(TokenSaveError::Config {
+            message: "tokensave_context: 'task' and its alias 'query' differ; pass just one"
+                .to_string(),
+        }),
+        (Some(task), _) | (None, Some(task)) => Ok(task),
+        (None, None) => Err(TokenSaveError::Config {
+            message:
+                "tokensave_context requires 'task' (or 'query'), e.g. {\"task\":\"Find tests\"}"
+                    .to_string(),
+        }),
+    }
+}
+
 /// Handles `tokensave_context` tool calls.
 pub(super) async fn handle_context(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let task = args
-        .get("task")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: task".to_string(),
-        })?;
+    let task = context_task(&args)?;
 
     let max_nodes = args
         .get("max_nodes")
@@ -963,6 +993,7 @@ pub(super) async fn handle_callers(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
+    session: Option<&super::SessionState>,
 ) -> Result<ToolResult> {
     // Default to direct callers only. `get_callers` is a transitive BFS, so a
     // larger default silently mixed 2-/3-hop callers into the same flat list
@@ -984,7 +1015,7 @@ pub(super) async fn handle_callers(
         symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
     let (output, touched_files) = match target {
         Target::NodeId(node_id) => {
-            let _target = require_existing_node(cg, &node_id).await?;
+            let _target = require_existing_node(cg, &node_id, session).await?;
             let callers = caller_items(cg, &[node_id], max_depth, resolve_dispatch, limit).await?;
             single_node_callers(callers, limit)
         }
@@ -1006,10 +1037,10 @@ pub(super) async fn handle_callers(
         }
     };
 
-    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let output = symbol_target::bounded_match_response(output, "callers", super::response_limit());
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&output) }]
+            "content": [{ "type": "text", "text": output }]
         }),
         touched_files,
     })
@@ -1448,6 +1479,7 @@ pub(super) async fn handle_callees(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
+    session: Option<&super::SessionState>,
 ) -> Result<ToolResult> {
     let max_depth = args
         .get("max_depth")
@@ -1465,7 +1497,7 @@ pub(super) async fn handle_callees(
         symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
     let (output, touched_files) = match target {
         Target::NodeId(node_id) => {
-            let _target = require_existing_node(cg, &node_id).await?;
+            let _target = require_existing_node(cg, &node_id, session).await?;
             let items = callee_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
             single_node_list("callees", items, limit)
         }
@@ -1892,10 +1924,10 @@ pub(super) async fn handle_impact(
     };
     let touched_files = unique_file_paths(files.iter().map(String::as_str));
 
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let formatted = symbol_target::bounded_match_response(output, "nodes", super::response_limit());
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            "content": [{ "type": "text", "text": formatted }]
         }),
         touched_files,
     })
@@ -2704,5 +2736,34 @@ fn read_body(project_root: &std::path::Path, node: &crate::types::Node) -> Strin
     match crate::sync::read_source_file(&abs_path) {
         Ok(source) => super::info::extract_lines(&source, node.start_line, node.end_line),
         Err(_) => String::from("<file unreadable>"),
+    }
+}
+
+#[cfg(test)]
+mod context_argument_tests {
+    use super::context_task;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_task_query_and_equal_aliases() {
+        for args in [
+            json!({"task": "find tests"}),
+            json!({"query": "find tests"}),
+            json!({"task": "find tests", "query": "find tests"}),
+        ] {
+            assert_eq!(context_task(&args).ok(), Some("find tests"));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_invalid_and_conflicting_arguments() {
+        for (args, expected) in [
+            (json!({"question": "find tests"}), "requires 'task'"),
+            (json!({"task": " "}), "'task' must be"),
+            (json!({"query": null}), "'query' must be"),
+            (json!({"task": "first", "query": "second"}), "differ"),
+        ] {
+            assert!(context_task(&args).is_err_and(|error| error.to_string().contains(expected)));
+        }
     }
 }

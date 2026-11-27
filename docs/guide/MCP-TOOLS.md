@@ -10,6 +10,10 @@ The server exposes more than 80 tools (one fewer when the optional `ast-grep` bi
 
 With the core toolset the server also lists `tokensave_more`. A call with an `area` (`analysis`, `edit`, `git`, `memory`, `navigate` or `all`) lists the tools of that area for the rest of the session, and the server sends `notifications/tools/list_changed` so the client fetches the list again. A session pays only for the areas it uses: the `git` area adds about 6 KB. A client that ignores `list_changed` keeps the core list. `tokensave install` grants `tokensave_more` along with every other tool, so it does not prompt; an install from before this release prompts once, until `tokensave reinstall` or the upgrade resync refreshes the permission list.
 
+Start with the core tools already exposed by the client. For example, use `tokensave_context` with `{"task":"Find the parser tests"}`, `tokensave_search` with `{"query":"parse_args"}`, `tokensave_status` with `{}`, or `tokensave_read` with `{"file":"src/main.rs","mode":"map"}`. When the host can look up a schema by name, request the exact tool. For an unlisted navigation tool, call `tokensave_more` with `{"area":"navigate"}`. Clients vary in how they expose schemas and respond to list changes.
+
+To keep a whole area out of every list, name it in `disabled_tool_areas` in `~/.tokensave/config.toml`, for example `disabled_tool_areas = ["memory"]` when another MCP server already keeps session memory. The values are the area names: `analysis`, `edit`, `git`, `memory` and `navigate`. The server then leaves the tools of that area out of `tools/list` with the core toolset and with `"tools": "full"`, and `tokensave_more` and the `initialize` instructions do not offer the area. When every area is named, `tokensave_more` is not listed. The core tools are in no area and are always listed. Unlike the toolset, this setting also stops the tools: a call by name to a tool of such an area does not run, and the answer says that the tool is disabled. A call of `tokensave_more` for such an area gets the same answer. The `tokensave tool` command line is not affected. Tool results, tool descriptions, the server instructions and the `tokensave://schema` resource do not send the agent to a tool of such an area. The server reads the setting when it starts and prints a warning on stderr for a name that is not an area. `tokensave doctor` shows each area that is off, with its tools.
+
 ## Which project a call answers
 
 When `tokensave serve` starts, it picks a default project:
@@ -120,6 +124,10 @@ and not a fallback to a parent branch's index).
 | `tokensave_vuln_reachability` | Report cached OSV advisories and indexed call evidence. Set `TOKENSAVE_OSV_ONLINE=1` in the server environment to allow refreshes. |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
+Call `tokensave_context` with a non-empty `task` string, for example `{"task":"Find authentication tests"}`. The `query` alias also works. When both are supplied, their values must match.
+
+Use `tokensave_read` for indexed and unindexed files inside the selected graph root, subject to its repository containment and protected-path checks. For files outside that root, such as global instructions or plugin skills, use the agent's native reader when the host authorizes access.
+
 ### Call Graph & Impact
 
 | Tool | Purpose |
@@ -131,6 +139,8 @@ and not a fallback to a parent branch's index).
 | `tokensave_affected` | Find test files affected by source changes |
 | `tokensave_rename` | Graph-based rename: every site with a confidence class (`exact`, `heuristic`, `ambiguous`, `text_only`), a diff preview, and an all-or-nothing apply. Not binding-aware |
 | `tokensave_hotspots` | Most connected symbols (highest call count) |
+
+Symbol-based callers and impact lookups can show fewer rows per match when the response reaches its size limit. Each shortened match reports the displayed `count`, the original `total`, and `truncated: true`.
 
 **Edge provenance.** `tokensave_callers`, `tokensave_callees` and `tokensave_call_chain` show how the resolver bound each edge they return. `resolved_by` names the resolver path, for example `exact-match`, `qualified-match` or `simple-name-match`. `resolved_exact` is `false` when the resolver picked the target by name alone, so a symbol of the same name elsewhere could be the real target; read the call site before you rely on such an edge. When one function reaches a target from several call sites, the strongest provenance is reported. Both fields are absent for an edge that an extractor read directly from the syntax tree. `tokensave_impact` reports `heuristic_edge_count`: the number of edges in the radius with `resolved_exact: false`.
 
@@ -145,14 +155,14 @@ and not a fallback to a parent branch's index).
 | `tokensave_complexity` | Rank functions by cyclomatic & cognitive complexity, nesting depth, Halstead metrics, maintainability index, CRAP, and safety metrics |
 | `tokensave_dead_code` | Find unreachable symbols (no incoming edges; symbols named as an ambiguity candidate are excluded) |
 | `tokensave_ambiguous_calls` | Call sites the resolver could not pin to one target, with every tied candidate |
-| `tokensave_god_class` | Find classes with too many members |
+| `tokensave_god_class` | Find classes/structs with too many members (methods + fields; supports optional `kinds` and `exclude_data_structs`) |
 | `tokensave_coupling` | Rank files by fan-in/fan-out |
 | `tokensave_inheritance_depth` | Find the deepest inheritance hierarchies |
 | `tokensave_circular` | Detect circular file dependencies |
 | `tokensave_imports` | Module-level import dependencies, cycles, and cut simulation |
 | `tokensave_recursion` | Detect recursive/mutually-recursive call cycles |
 | `tokensave_unused_imports` | Import statements never referenced |
-| `tokensave_doc_coverage` | Public symbols missing documentation |
+| `tokensave_doc_coverage` | Public code symbols missing documentation (excludes non-code docs/config extensions such as `.md`, `.txt`, `.json`, `.yaml`, `.toml`, `.canvas`) |
 | `tokensave_simplify_scan` | Quality analysis of changed files (duplications, dead code, complexity) |
 
 ### Code-Health Analytics

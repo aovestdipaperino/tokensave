@@ -1,0 +1,1623 @@
+//! Integration tests for Swift receiver-aware and SPM-target-scoped call resolution.
+
+use std::fs;
+use std::path::Path;
+
+use tempfile::TempDir;
+use tokensave::tokensave::TokenSave;
+use tokensave::types::{EdgeKind, Node, NodeKind};
+
+/// A root `Package.swift`, which makes `Sources/<Target>` and `Tests/<Target>`
+/// `SwiftPM` targets for the resolver.
+const PACKAGE_MANIFEST: (&str, &str) = ("Package.swift", "// swift-tools-version: 5.9\n");
+
+async fn index_files(files: &[(&str, &str)]) -> (TempDir, TokenSave) {
+    let dir = TempDir::new().expect("temp dir");
+    for (rel, content) in files {
+        let abs = dir.path().join(rel);
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(abs, content).expect("write swift file");
+    }
+    let cg = TokenSave::init(dir.path()).await.expect("init");
+    cg.index_all().await.expect("index_all");
+    (dir, cg)
+}
+
+fn find_node<'n>(nodes: &'n [Node], file_suffix: &str, name: &str, kind: NodeKind) -> &'n Node {
+    nodes
+        .iter()
+        .find(|n| n.file_path.ends_with(file_suffix) && n.name == name && n.kind == kind)
+        .unwrap_or_else(|| panic!("missing {kind:?} {name} in {file_suffix}"))
+}
+
+async fn outgoing_call_targets(cg: &TokenSave, source_id: &str) -> Vec<String> {
+    let edges = cg.get_all_edges().await.expect("get_all_edges");
+    edges
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.source == source_id)
+        .map(|e| e.target)
+        .collect()
+}
+
+/// Negative paths N1 & N2: stdlib calls (`bytes.append`, `records.sorted`, `self.points.append`)
+/// must NOT self-recurse or link across unimported SPM targets or from Sources to Tests.
+#[tokio::test]
+async fn swift_stdlib_calls_and_unimported_targets_do_not_create_phantom_cycles() {
+    let (_dir, cg) = index_files(&[
+        PACKAGE_MANIFEST,
+        (
+            "Sources/Core/DataBuffer.swift",
+            r#"import Foundation
+public struct DataBuffer {
+    public var bytes: [UInt8] = []
+    public mutating func append(_ chunk: Data) {
+        bytes.append(0x01)
+    }
+}
+"#,
+        ),
+        (
+            "Sources/Network/Packet.swift",
+            r#"import Foundation
+public struct Packet {
+    public mutating func send() {
+        var localBytes: [UInt8] = [0x01]
+        localBytes.append(0x02)
+        var rawData = Data()
+        rawData.append(Data([0x03]))
+        let encoder = JSONEncoder()
+        _ = try? encoder.encode("ok")
+    }
+}
+"#,
+        ),
+        (
+            "Tests/CoreTests/BufferTests.swift",
+            r#"@testable import Core
+import Foundation
+final class BufferTests {
+    var bytes = Data()
+    func append(_ s: String) {
+        bytes.append(Data(s.utf8))
+    }
+}
+"#,
+        ),
+        (
+            "Sources/Core/Exporter.swift",
+            r#"public struct Exporter {
+    public func sorted(_ items: [Int]) -> [Int] {
+        items.sorted()
+    }
+    public func encode(_ value: String) -> String {
+        value
+    }
+}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let packet_send = find_node(&nodes, "Packet.swift", "send", NodeKind::Method);
+    let buffer_append = find_node(&nodes, "DataBuffer.swift", "append", NodeKind::Method);
+    let test_append = find_node(&nodes, "BufferTests.swift", "append", NodeKind::Method);
+    let exporter_sorted = find_node(&nodes, "Exporter.swift", "sorted", NodeKind::Method);
+
+    let send_targets = outgoing_call_targets(&cg, &packet_send.id).await;
+    assert!(
+        send_targets.is_empty(),
+        "Packet.send must not call DataBuffer.append or BufferTests.append: {send_targets:?}"
+    );
+
+    let test_targets = outgoing_call_targets(&cg, &test_append.id).await;
+    assert!(
+        !test_targets.contains(&test_append.id),
+        "BufferTests.append must not self-recurse via Data.append"
+    );
+    assert!(
+        !test_targets.contains(&buffer_append.id),
+        "BufferTests.append must not resolve bytes.append to DataBuffer.append"
+    );
+
+    let sorted_targets = outgoing_call_targets(&cg, &exporter_sorted.id).await;
+    assert!(
+        !sorted_targets.contains(&exporter_sorted.id),
+        "Exporter.sorted must not self-recurse via Array.sorted"
+    );
+}
+
+/// Positive path P1 & P3 & Negative N2: typed local/property receivers resolve across files
+/// within the same SPM target and across SPM targets ONLY when the target module is imported.
+#[tokio::test]
+async fn swift_typed_receivers_respect_spm_target_import_visibility() {
+    let (_dir, cg) = index_files(&[
+        PACKAGE_MANIFEST,
+        (
+            "Sources/Core/Store.swift",
+            r#"public class HistoryStore {
+    public init() {}
+    public func persist() {}
+}
+"#,
+        ),
+        (
+            "Sources/App/ImportedCaller.swift",
+            r#"import Core
+struct ImportedCaller {
+    func run(store: HistoryStore) {
+        store.persist()
+    }
+}
+"#,
+        ),
+        (
+            "Sources/Other/UnimportedCaller.swift",
+            r#"struct OtherHistory {
+    func callUntyped(_ store: UnknownStore) {
+        store.persist()
+    }
+}
+"#,
+        ),
+        (
+            "Tests/CoreTests/StoreTestHelper.swift",
+            r#"class TestFakeStore {
+    func persist() {}
+    func helperOnlyInTest() {}
+}
+"#,
+        ),
+        (
+            "Sources/Core/SameTargetCaller.swift",
+            r#"struct SameTargetCaller {
+    let store: HistoryStore
+    func execute() {
+        store.persist()
+        let f = TestFakeStore()
+        f.helperOnlyInTest()
+    }
+}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let store_persist = find_node(&nodes, "Store.swift", "persist", NodeKind::Method);
+    let imported_run = find_node(&nodes, "ImportedCaller.swift", "run", NodeKind::Method);
+    let unimported_call = find_node(
+        &nodes,
+        "UnimportedCaller.swift",
+        "callUntyped",
+        NodeKind::Method,
+    );
+    let same_target_exec = find_node(
+        &nodes,
+        "SameTargetCaller.swift",
+        "execute",
+        NodeKind::Method,
+    );
+    let test_helper = find_node(
+        &nodes,
+        "StoreTestHelper.swift",
+        "helperOnlyInTest",
+        NodeKind::Method,
+    );
+
+    let imported_targets = outgoing_call_targets(&cg, &imported_run.id).await;
+    assert!(
+        imported_targets.contains(&store_persist.id),
+        "Imported target call must resolve HistoryStore.persist: {imported_targets:?}"
+    );
+
+    let same_target_targets = outgoing_call_targets(&cg, &same_target_exec.id).await;
+    assert!(
+        same_target_targets.contains(&store_persist.id),
+        "Same SPM target property call must resolve HistoryStore.persist: {same_target_targets:?}"
+    );
+    assert!(
+        !same_target_targets.contains(&test_helper.id),
+        "Production target must NEVER call Tests target symbols: {same_target_targets:?}"
+    );
+
+    let unimported_targets = outgoing_call_targets(&cg, &unimported_call.id).await;
+    assert!(
+        !unimported_targets.contains(&store_persist.id),
+        "Unimported SPM target must NOT call Core.HistoryStore.persist: {unimported_targets:?}"
+    );
+}
+
+#[test]
+fn integration_path_sanity() {
+    assert!(Path::new("Sources/Core/Store.swift").ends_with("Store.swift"));
+}
+
+/// Positive P2/P3 & Negative N3: computed property reads, `!fn()`, higher-order
+/// function refs, `#selector(...)`, and label/arity overload disambiguation resolve
+/// accurately without creating calls for locals or shorthand enum values.
+#[tokio::test]
+async fn swift_computed_props_selectors_function_refs_and_overloads_resolve() {
+    let (_dir, cg) = index_files(&[
+        PACKAGE_MANIFEST,
+        (
+            "Sources/App/DB.swift",
+            r#"public enum SqlDB {
+    public static func bind(_ value: Double, at index: Int) {}
+    public static func bind(
+        _ value: String,
+        key: String,
+        at index: Int
+    ) {}
+}
+
+public class ReceiverStore {
+    public init() {}
+    public func receive(_ item: String) {}
+    public func receive(
+        _ items: [String],
+        for category: String
+    ) {}
+}
+"#,
+        ),
+        (
+            "Sources/App/ViewsAndController.swift",
+            r#"public struct DashboardView {
+    public let labelText: String
+
+    public var body: String {
+        _ = controls
+        return !isBlocked(labelText) ? labelText : ""
+    }
+
+    private var controls: String {
+        renderButton(action: lookUpHash)
+    }
+
+    private func renderButton(action: () -> Void) -> String { "" }
+    private func lookUpHash() {}
+    private func isBlocked(_ input: String) -> Bool { false }
+}
+
+public final class Controller {
+    private let store = ReceiverStore()
+
+    public func configure(mode: String) {
+        _ = #selector(statusItemClicked)
+        SqlDB.bind(1.5, at: 1)
+        SqlDB.bind("abc", key: "k", at: 2)
+        store.receive("one")
+        store.receive(["a"], for: "cat")
+        let localValue = mode
+        _ = accept(localValue, style: .compact)
+    }
+
+    private func accept(_ v: String, style: Any) -> String { v }
+    @objc private func statusItemClicked() {}
+    public static func formatRow(_ row: String) -> String { row }
+    public func exportRows(_ rows: [String]) -> [String] {
+        rows.map(Controller.formatRow)
+    }
+}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+
+    let bind_double = nodes
+        .iter()
+        .find(|n| n.name == "bind" && n.signature.as_deref().is_some_and(|s| s.contains("Double")))
+        .expect("bind(Double)");
+    let bind_string = nodes
+        .iter()
+        .find(|n| {
+            n.name == "bind"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("key: String"))
+        })
+        .expect("bind(String, key:)");
+
+    let recv_one = nodes
+        .iter()
+        .find(|n| {
+            n.name == "receive"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| !s.contains("for category"))
+        })
+        .expect("receive(_:)");
+    let recv_two = nodes
+        .iter()
+        .find(|n| {
+            n.name == "receive"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("for category"))
+        })
+        .expect("receive(_:for:)");
+
+    let status_clicked = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "statusItemClicked",
+        NodeKind::Method,
+    );
+    let lookup_hash = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "lookUpHash",
+        NodeKind::Method,
+    );
+    let is_blocked = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "isBlocked",
+        NodeKind::Method,
+    );
+    let format_row = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "formatRow",
+        NodeKind::Method,
+    );
+    let controls = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "controls",
+        NodeKind::Property,
+    );
+    let configure = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "configure",
+        NodeKind::Method,
+    );
+    let body = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "body",
+        NodeKind::Property,
+    );
+    let export_rows = find_node(
+        &nodes,
+        "ViewsAndController.swift",
+        "exportRows",
+        NodeKind::Method,
+    );
+
+    let all_edges = cg.get_all_edges().await.expect("edges");
+    let configure_targets: Vec<&str> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.source == configure.id)
+        .map(|e| e.target.as_str())
+        .collect();
+
+    assert!(
+        configure_targets.contains(&status_clicked.id.as_str()),
+        "selector missing: {configure_targets:?}"
+    );
+    assert!(
+        configure_targets.contains(&bind_double.id.as_str()),
+        "bind_double missing: {configure_targets:?}"
+    );
+    assert!(
+        configure_targets.contains(&bind_string.id.as_str()),
+        "bind_string missing: {configure_targets:?}"
+    );
+    assert!(
+        configure_targets.contains(&recv_one.id.as_str()),
+        "recv_one missing: {configure_targets:?}"
+    );
+    assert!(
+        configure_targets.contains(&recv_two.id.as_str()),
+        "recv_two missing: {configure_targets:?}"
+    );
+
+    // Ensure overload edges did not merge onto just one of the overloads (line-specific check).
+    let bind_double_callers: Vec<_> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.target == bind_double.id)
+        .collect();
+    let bind_string_callers: Vec<_> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.target == bind_string.id)
+        .collect();
+    assert_eq!(
+        bind_double_callers.len(),
+        1,
+        "bind_double callers: {bind_double_callers:?}"
+    );
+    assert_eq!(
+        bind_string_callers.len(),
+        1,
+        "bind_string callers: {bind_string_callers:?}"
+    );
+    assert_ne!(bind_double_callers[0].line, bind_string_callers[0].line);
+
+    let body_targets: Vec<&str> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.source == body.id)
+        .map(|e| e.target.as_str())
+        .collect();
+    assert!(
+        body_targets.contains(&controls.id.as_str()),
+        "body -> controls missing: {body_targets:?}"
+    );
+    assert!(
+        body_targets.contains(&is_blocked.id.as_str()),
+        "body -> !isBlocked missing: {body_targets:?}"
+    );
+
+    let controls_targets: Vec<&str> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.source == controls.id)
+        .map(|e| e.target.as_str())
+        .collect();
+    assert!(
+        controls_targets.contains(&lookup_hash.id.as_str()),
+        "controls -> lookUpHash missing: {controls_targets:?}"
+    );
+
+    let export_targets: Vec<&str> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.source == export_rows.id)
+        .map(|e| e.target.as_str())
+        .collect();
+    assert!(
+        export_targets.contains(&format_row.id.as_str()),
+        "exportRows -> formatRow missing: {export_targets:?}"
+    );
+}
+
+#[tokio::test]
+async fn swift_inheritance_self_super_spm_reachability_and_overload_ties() {
+    let (_dir, cg) = index_files(&[
+        PACKAGE_MANIFEST,
+        (
+            "Sources/Core/Base.swift",
+            r#"
+import Foundation
+
+public protocol Styled {
+    func applyStyle()
+}
+
+open class GenericBase<T> {
+    public init(a: Int) {}
+    public init(a: Int, b: Int) {}
+    open func baseAction() {}
+    public func inheritedOnly() {}
+    public func sharedPing() {}
+}
+
+public func coreHelper() {}
+"#,
+        ),
+        (
+            "Sources/Core/CallerSameTarget.swift",
+            r#"
+import Foundation
+
+final class Child<Element>: Core.GenericBase<Element>, Styled where Element: Equatable {
+    func applyStyle() {}
+    func helper() {}
+
+    init(a: Int) {
+        super.init(a: a)
+    }
+
+    init(a: Int, b: Int) {
+        super.init(a: a)
+    }
+
+    override func baseAction() {
+        super.baseAction()
+        self.helper()
+        self.missingOwn()
+    }
+
+    convenience init(pair: Int) {
+        self.init(a: pair, b: pair)
+    }
+}
+
+func exerciseInheritance(_ c: Child<String>) {
+    c.inheritedOnly()
+    c.applyStyle()
+    c.nonexistent()
+    coreHelper()
+    render()
+}
+
+extension Child {
+    func extHelper() {
+        self.helper()
+    }
+}
+
+struct LeftBox {
+    func sharedPing() {}
+    func render() {}
+    func twoRequired(first: Int, second: Int) {}
+}
+
+struct RightBox {
+    func sharedPing() {}
+    func render() {}
+    func twoRequired(x: Int, y: Int) {}
+}
+
+struct DuplicateOwner {
+    func ping() {}
+}
+
+func useDup(_ d: DuplicateOwner) {
+    d.ping()
+}
+
+func callTwoRequired(_ b: LeftBox) {
+    twoRequired()
+}
+"#,
+        ),
+        (
+            "Sources/Core/DuplicateOwnerA.swift",
+            r#"
+public struct DuplicateOwner {
+    public func ping() {}
+}
+"#,
+        ),
+        (
+            "Sources/UnimportedTarget/Hidden.swift",
+            r#"
+public func coreHelperFromOther() {}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let base_action_base = find_node(&nodes, "Base.swift", "baseAction", NodeKind::Method);
+    let base_action_child = find_node(
+        &nodes,
+        "CallerSameTarget.swift",
+        "baseAction",
+        NodeKind::Method,
+    );
+    let helper_node = find_node(&nodes, "CallerSameTarget.swift", "helper", NodeKind::Method);
+    let ext_helper = find_node(
+        &nodes,
+        "CallerSameTarget.swift",
+        "extHelper",
+        NodeKind::Method,
+    );
+    let apply_style_proto = find_node(&nodes, "Base.swift", "applyStyle", NodeKind::Method);
+    let apply_style_child = find_node(
+        &nodes,
+        "CallerSameTarget.swift",
+        "applyStyle",
+        NodeKind::Method,
+    );
+    let init_two = nodes
+        .iter()
+        .find(|n| {
+            n.file_path.ends_with("CallerSameTarget.swift")
+                && n.kind == NodeKind::Constructor
+                && n.signature.as_deref().is_some_and(|s| s.contains("b: Int"))
+        })
+        .expect("2-arg init on Child");
+    let conv_init = nodes
+        .iter()
+        .find(|n| {
+            n.kind == NodeKind::Constructor
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("pair: Int"))
+        })
+        .expect("convenience init");
+    let core_helper = find_node(&nodes, "Base.swift", "coreHelper", NodeKind::Function);
+    let inherited_only = find_node(&nodes, "Base.swift", "inheritedOnly", NodeKind::Method);
+    let exercise = find_node(
+        &nodes,
+        "CallerSameTarget.swift",
+        "exerciseInheritance",
+        NodeKind::Function,
+    );
+    let dup_local = find_node(&nodes, "CallerSameTarget.swift", "ping", NodeKind::Method);
+    let use_dup = find_node(
+        &nodes,
+        "CallerSameTarget.swift",
+        "useDup",
+        NodeKind::Function,
+    );
+
+    let base_targets = outgoing_call_targets(&cg, &base_action_child.id).await;
+    assert!(
+        base_targets.contains(&base_action_base.id) || base_targets.contains(&base_action_child.id),
+        "super.baseAction missing: {base_targets:?}"
+    );
+    assert!(
+        base_targets.contains(&helper_node.id),
+        "self.helper missing: {base_targets:?}"
+    );
+
+    let ext_targets = outgoing_call_targets(&cg, &ext_helper.id).await;
+    assert!(
+        ext_targets.contains(&helper_node.id),
+        "extension self.helper missing: {ext_targets:?}"
+    );
+
+    let conv_targets = outgoing_call_targets(&cg, &conv_init.id).await;
+    assert!(
+        conv_targets.contains(&init_two.id),
+        "self.init(a:b:) must resolve to 2-arg init: {conv_targets:?}"
+    );
+
+    let ex_targets = outgoing_call_targets(&cg, &exercise.id).await;
+    assert!(
+        ex_targets.contains(&inherited_only.id),
+        "c.inheritedOnly() must walk GenericBase: {ex_targets:?}"
+    );
+    assert!(
+        ex_targets.contains(&apply_style_child.id) || ex_targets.contains(&apply_style_proto.id),
+        "c.applyStyle() missing: {ex_targets:?}"
+    );
+    assert!(
+        ex_targets.contains(&core_helper.id),
+        "same SPM target coreHelper missing: {ex_targets:?}"
+    );
+
+    let dup_targets = outgoing_call_targets(&cg, &use_dup.id).await;
+    assert!(
+        dup_targets.contains(&dup_local.id),
+        "same-file DuplicateOwner::ping should break multi-owner tie: {dup_targets:?}"
+    );
+}
+
+async fn call_target_nodes<'n>(cg: &TokenSave, nodes: &'n [Node], source: &Node) -> Vec<&'n Node> {
+    let targets = outgoing_call_targets(cg, &source.id).await;
+    nodes.iter().filter(|n| targets.contains(&n.id)).collect()
+}
+
+async fn call_source_nodes<'n>(cg: &TokenSave, nodes: &'n [Node], target: &Node) -> Vec<&'n Node> {
+    let incoming: Vec<String> = cg
+        .get_incoming_edges(&target.id)
+        .await
+        .expect("get_incoming_edges")
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .map(|e| e.source)
+        .collect();
+    nodes.iter().filter(|n| incoming.contains(&n.id)).collect()
+}
+
+/// Catches: a `Sources/` directory without a `Package.swift` (the Tuist and
+/// XcodeGen layout, files placed directly in `Sources/`) being split into
+/// fake `SwiftPM` targets, which dropped every cross-file call and base class.
+#[tokio::test]
+async fn swift_sources_dir_without_manifest_is_not_a_spm_target() {
+    let (_dir, cg) = index_files(&[
+        (
+            "App/Sources/Base.swift",
+            "class BaseVC { func setup() {} }\nfunc helperB() {}\nfinal class Worker { func process(x: Int) {} }\n",
+        ),
+        (
+            "App/Sources/Sub.swift",
+            "final class SubVC: BaseVC {}\nfunc useB() { helperB() }\nfunc runWorker() {\n    let w = Worker()\n    w.process(x: 1)\n}\n",
+        ),
+        ("Sources/Views/Screen.swift", "func show() { model() }\n"),
+        ("Sources/Models/Model.swift", "func model() {}\n"),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let helper = find_node(&nodes, "Base.swift", "helperB", NodeKind::Function);
+    let process = find_node(&nodes, "Base.swift", "process", NodeKind::Method);
+    let base = find_node(&nodes, "Base.swift", "BaseVC", NodeKind::Class);
+    let sub = find_node(&nodes, "Sub.swift", "SubVC", NodeKind::Class);
+    let use_b = find_node(&nodes, "Sub.swift", "useB", NodeKind::Function);
+    let run_worker = find_node(&nodes, "Sub.swift", "runWorker", NodeKind::Function);
+    let show = find_node(&nodes, "Screen.swift", "show", NodeKind::Function);
+    let model = find_node(&nodes, "Model.swift", "model", NodeKind::Function);
+
+    assert!(outgoing_call_targets(&cg, &use_b.id)
+        .await
+        .contains(&helper.id));
+    assert!(outgoing_call_targets(&cg, &run_worker.id)
+        .await
+        .contains(&process.id));
+    assert!(outgoing_call_targets(&cg, &show.id)
+        .await
+        .contains(&model.id));
+    let edges = cg.get_all_edges().await.expect("edges");
+    assert!(
+        edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Extends && e.source == sub.id && e.target == base.id),
+        "SubVC must extend BaseVC across files in a manifest-less Sources/ dir"
+    );
+}
+
+/// Catches: a type and its same-file extension, which share a qualified name,
+/// yielding the same method twice so the typed-receiver match tied with itself.
+#[tokio::test]
+async fn swift_typed_receiver_with_same_file_extension_resolves() {
+    let (_dir, cg) = index_files(&[(
+        "Alpha.swift",
+        r#"struct Alpha { func ping(n: Int) {} }
+extension Alpha { var label: String { "a" } }
+func callAlpha() {
+    let a = Alpha()
+    a.ping(n: 1)
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let ping = find_node(&nodes, "Alpha.swift", "ping", NodeKind::Method);
+    let caller = find_node(&nodes, "Alpha.swift", "callAlpha", NodeKind::Function);
+    assert!(outgoing_call_targets(&cg, &caller.id)
+        .await
+        .contains(&ping.id));
+}
+
+/// Catches: `items.count` inside a computed `count` (and `other.title`) being
+/// recorded as a read of the enclosing type's own computed property.
+#[tokio::test]
+async fn swift_computed_property_read_ignores_foreign_receivers() {
+    let (_dir, cg) = index_files(&[(
+        "Counter.swift",
+        r#"struct Counter {
+    var items: [Int] = []
+    var count: Int { items.count }
+    var title: String { "t" }
+    var summary: String { self.title }
+    func describe(other: Other) -> String { other.title }
+}
+struct Other { var title: String { "o" } }
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let count = find_node(&nodes, "Counter.swift", "count", NodeKind::Property);
+    let summary = find_node(&nodes, "Counter.swift", "summary", NodeKind::Property);
+    let describe = find_node(&nodes, "Counter.swift", "describe", NodeKind::Method);
+    let counter_title = nodes
+        .iter()
+        .find(|n| n.name == "title" && n.qualified_name.contains("Counter::"))
+        .expect("Counter.title");
+
+    assert!(!outgoing_call_targets(&cg, &count.id)
+        .await
+        .contains(&count.id));
+    assert!(!outgoing_call_targets(&cg, &describe.id)
+        .await
+        .contains(&counter_title.id));
+    assert!(outgoing_call_targets(&cg, &summary.id)
+        .await
+        .contains(&counter_title.id));
+}
+
+/// Catches: an untyped local shadowing a typed member property with the same
+/// name being typed as the member (`let repo = makeOther()` became `Repo`).
+#[tokio::test]
+async fn swift_untyped_local_shadows_typed_member() {
+    let (_dir, cg) = index_files(&[(
+        "Shadow.swift",
+        r#"final class Repo { func persist() {} }
+final class OtherRepo { func persist() {} }
+func makeOther() -> OtherRepo { OtherRepo() }
+final class Svc {
+    var repo = Repo()
+    func shadowed() {
+        let repo = makeOther()
+        repo.persist()
+    }
+    func member() { repo.persist() }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let repo_persist = nodes
+        .iter()
+        .find(|n| n.name == "persist" && n.qualified_name.contains("::Repo::"))
+        .expect("Repo.persist");
+    let shadowed = find_node(&nodes, "Shadow.swift", "shadowed", NodeKind::Method);
+    let member = find_node(&nodes, "Shadow.swift", "member", NodeKind::Method);
+    assert!(!outgoing_call_targets(&cg, &shadowed.id)
+        .await
+        .contains(&repo_persist.id));
+    assert!(outgoing_call_targets(&cg, &member.id)
+        .await
+        .contains(&repo_persist.id));
+}
+
+/// Catches: parameter types never being bound (the type sits in the
+/// `parameter` node's `type` field), so `store.save()` lost its edge.
+#[tokio::test]
+async fn swift_parameter_types_type_their_receivers() {
+    let (_dir, cg) = index_files(&[(
+        "Params.swift",
+        r#"final class Store { func save() {} }
+final class Repo2 { func commitAll() {} }
+final class Repo3 { func commitAll() {} }
+func useStore(store: Store) { store.save() }
+func useRepo(_ r: Repo2?) { r?.commitAll() }
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let save = find_node(&nodes, "Params.swift", "save", NodeKind::Method);
+    let commit = nodes
+        .iter()
+        .find(|n| n.name == "commitAll" && n.qualified_name.contains("Repo2::"))
+        .expect("Repo2.commitAll");
+    let use_store = find_node(&nodes, "Params.swift", "useStore", NodeKind::Function);
+    let use_repo = find_node(&nodes, "Params.swift", "useRepo", NodeKind::Function);
+    assert!(outgoing_call_targets(&cg, &use_store.id)
+        .await
+        .contains(&save.id));
+    assert_eq!(
+        outgoing_call_targets(&cg, &use_repo.id).await,
+        vec![commit.id.clone()]
+    );
+}
+
+/// Catches: overload matching misreading closure-typed parameters (`->`),
+/// attribute arguments (`@available(...)`) and trailing closures.
+#[tokio::test]
+async fn swift_overloads_with_closures_attributes_and_trailing_closures() {
+    let (_dir, cg) = index_files(&[(
+        "Overloads.swift",
+        r#"final class Net {
+    func request(_ handler: @escaping (Int) -> Void, queue: Int) {}
+    func request(_ handler: @escaping (Int) -> Void) {}
+}
+final class Loader {
+    func load(id: Int, completion: (Int) -> Void) {}
+    func load(id: Int) {}
+}
+final class Attr {
+    @available(macOS 10.15, *)
+    func paint(color: Int) {}
+    func paint(color: Int, alpha: Int) {}
+}
+func callNet(n: Net) { n.request({ _ in }, queue: 1) }
+func callLoader(l: Loader) { l.load(id: 1) { _ in } }
+func callAttr(a: Attr) { a.paint(color: 1) }
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    for (caller, expected) in [
+        ("callNet", "queue: Int"),
+        ("callLoader", "completion:"),
+        ("callAttr", "@available"),
+    ] {
+        let source = find_node(&nodes, "Overloads.swift", caller, NodeKind::Function);
+        let targets = call_target_nodes(&cg, &nodes, source).await;
+        assert_eq!(targets.len(), 1, "{caller}: {targets:?}");
+        assert!(
+            targets[0]
+                .signature
+                .as_deref()
+                .is_some_and(|sig| sig.contains(expected)),
+            "{caller} resolved to the wrong overload: {:?}",
+            targets[0].signature
+        );
+    }
+}
+
+/// Catches: incremental sync resolving Swift refs without declaration
+/// signatures, which disabled inheritance walks and overload matching, so
+/// edges built by the full index vanished after the next edit.
+#[tokio::test]
+async fn swift_incremental_sync_keeps_signature_based_edges() {
+    let source = r#"class Base { func baseOnly() {} }
+class Child: Base {}
+func useChild() {
+    let c = Child()
+    c.baseOnly()
+}
+enum Binder {
+    static func bind(value: Int) {}
+    static func bind(name: String, value: Int) {}
+    static func useIt() { Binder.bind(name: "a", value: 1) }
+}
+"#;
+    let (dir, cg) = index_files(&[("Inherit.swift", source)]).await;
+    let calls = |edges: Vec<tokensave::types::Edge>| {
+        let mut calls: Vec<(String, String)> = edges
+            .into_iter()
+            .filter(|e| e.kind == EdgeKind::Calls)
+            .map(|e| (e.source, e.target))
+            .collect();
+        calls.sort();
+        calls
+    };
+    let full = calls(cg.get_all_edges().await.expect("edges"));
+    assert_eq!(full.len(), 2, "full index: {full:?}");
+
+    fs::write(
+        dir.path().join("Inherit.swift"),
+        format!("{source}// edited\n"),
+    )
+    .expect("edit file");
+    cg.sync().await.expect("sync");
+    let incremental = calls(cg.get_all_edges().await.expect("edges"));
+    assert_eq!(
+        incremental, full,
+        "incremental sync must match the full index"
+    );
+}
+
+/// Catches: the stdlib-name guard covering verbs that project types declare
+/// (`save`), which dropped `s.save()` on an untyped receiver, while a real
+/// stdlib name (`append`) on an untyped receiver must still stay unbound.
+#[tokio::test]
+async fn swift_untyped_receiver_keeps_project_verbs_and_blocks_stdlib_names() {
+    let (_dir, cg) = index_files(&[(
+        "Store.swift",
+        r#"final class Store {
+    func save() {}
+    func append(_ x: Int) {}
+}
+func makeStore() -> Store { Store() }
+func persistAll(values: [Int]) {
+    let s = makeStore()
+    s.save()
+    var copy = values
+    copy.append(1)
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let save = find_node(&nodes, "Store.swift", "save", NodeKind::Method);
+    let append = find_node(&nodes, "Store.swift", "append", NodeKind::Method);
+    let caller = find_node(&nodes, "Store.swift", "persistAll", NodeKind::Function);
+    let targets = outgoing_call_targets(&cg, &caller.id).await;
+    assert!(
+        targets.contains(&save.id),
+        "s.save() must resolve: {targets:?}"
+    );
+    assert!(
+        !targets.contains(&append.id),
+        "copy.append(1) must not bind to Store.append: {targets:?}"
+    );
+}
+
+/// Catches the 6 residual real-repo Swift edge cases (B1-B6):
+/// - B1: `private extension Array` in another file capturing `Array::append`, and `internal`
+///   multi-param extensions matching single-arg stdlib `Array.append`.
+/// - B2: `guard let` local variable not shadowing same-named class method + subscript `servers[k]`.
+/// - B3: `.formatted(...)` on a value matching another type's `formatted` method.
+/// - B4: calls inside nested local functions (`func flush()`, `func visit()`) missing from graph.
+/// - B5: leading-dot `.body` shorthand emitting a false computed-property read to `var body`.
+/// - B6: single trailing-closure overloads (`installedTerminals { ... }`), extension
+///   `self.init(...) { ... }` self-recursion, default-parameter function refs, and variadics.
+#[tokio::test]
+async fn swift_residual_real_repo_edge_cases_b1_to_b6() {
+    let (_dir, cg) = index_files(&[
+        (
+            "Sources/App/PrivateExt.swift",
+            r#"struct SystemInfoRow {}
+private extension Array where Element == SystemInfoRow {
+    mutating func append(optional value: String?, key: String) {}
+}
+func usePrivateExt() {
+    var rows: [SystemInfoRow] = []
+    rows.append(optional: "v", key: "k")
+}
+"#,
+        ),
+        (
+            "Sources/App/InternalExt.swift",
+            r#"extension Array where Element == Int {
+    mutating func append(extra value: Int, label: String) {}
+}
+"#,
+        ),
+        (
+            "Sources/App/Models.swift",
+            r#"struct LiveHistory {
+    var values: [Int] = []
+    mutating func append(_ value: Int) {
+        Self.append(value, to: &values)
+    }
+    private static func append(_ value: Int, to values: inout [Int]) {
+        values.append(value)
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/McpReader.swift",
+            r#"import Foundation
+actor McpReader {
+    func servers(for key: String) -> [String] { [] }
+    static func parse(_ object: [String: Any]) -> [String] {
+        guard let servers = object["mcpServers"] as? [String: String] else {
+            return []
+        }
+        return servers.keys.sorted().compactMap { name in
+            servers[name]
+        }
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Formatting.swift",
+            r#"struct Formatting {
+    static func percent(_ value: Double) -> String {
+        "\(max(0, value).formatted())%"
+    }
+}
+struct RankingView {
+    func formatted(_ value: Double) -> String { Formatting.percent(value) }
+}
+"#,
+        ),
+        (
+            "Sources/App/NestedAndDefault.swift",
+            r#"struct StartupParser {
+    private static func parseValue(_ raw: String?) -> String? { raw }
+    private static func parseDisposition(_ raw: String) -> String { raw }
+    static func load(items: [String]) -> [String] {
+        var out: [String] = []
+        func flush(_ item: String) {
+            if let v = parseValue(item) {
+                out.append(parseDisposition(v))
+            }
+        }
+        for item in items { flush(item) }
+        return out
+    }
+}
+struct DevCollector {
+    static func appleSignature(_ path: String) -> Bool { true }
+    let checker: (String) -> Bool
+    init(isAppleSigned: @escaping (String) -> Bool = DevCollector.appleSignature) {
+        self.checker = isAppleSigned
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Views.swift",
+            r#"struct FontStyle {
+    static let body = FontStyle()
+    func weight() -> FontStyle { self }
+}
+func styleFont(_ f: FontStyle) -> String { "ok" }
+struct SummaryHero {
+    var body: String { uptime }
+    var uptime: String { styleFont(.body.weight()) }
+}
+struct SummaryTile {
+    init(title: String, visual: () -> String) {}
+}
+extension SummaryTile {
+    init(title: String) {
+        self.init(title: title) { "empty" }
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Terminals.swift",
+            r#"struct TerminalRegistry {
+    static func installedTerminals(isInstalled: (String) -> Bool) -> [String] {
+        ["a"].filter(isInstalled)
+    }
+    static func installedTerminals() -> [String] {
+        installedTerminals { $0 == "a" }
+    }
+    static func log(_ items: String...) {}
+    static func emitLogs() {
+        log("one", "two")
+    }
+}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+
+    // B1: private extension append receives ONLY its same-file caller, never Models.swift;
+    // internal extension `append(extra:label:)` is never hit by `values.append(value)`.
+    let priv_append = find_node(
+        &nodes,
+        "Sources/App/PrivateExt.swift",
+        "append",
+        NodeKind::Method,
+    );
+    let priv_callers = call_source_nodes(&cg, &nodes, priv_append).await;
+    assert_eq!(
+        priv_callers.len(),
+        1,
+        "B1 private ext callers: {priv_callers:?}"
+    );
+    assert_eq!(priv_callers[0].name, "usePrivateExt");
+
+    let int_append = find_node(
+        &nodes,
+        "Sources/App/InternalExt.swift",
+        "append",
+        NodeKind::Method,
+    );
+    let int_callers = call_source_nodes(&cg, &nodes, int_append).await;
+    assert!(
+        int_callers.is_empty(),
+        "B1 single-arg Array.append must not bind to multi-param internal extension: {int_callers:?}"
+    );
+
+    // B2: `McpReader.parse` must NOT call `McpReader.servers`.
+    let mcp_parse = find_node(
+        &nodes,
+        "Sources/App/McpReader.swift",
+        "parse",
+        NodeKind::Method,
+    );
+    let mcp_servers = find_node(
+        &nodes,
+        "Sources/App/McpReader.swift",
+        "servers",
+        NodeKind::Method,
+    );
+    let parse_targets = outgoing_call_targets(&cg, &mcp_parse.id).await;
+    assert!(
+        !parse_targets.contains(&mcp_servers.id),
+        "B2 guard let + subscript must not call McpReader.servers: {parse_targets:?}"
+    );
+
+    // B3: `Formatting.percent` must NOT call `RankingView.formatted`.
+    let fmt_percent = find_node(
+        &nodes,
+        "Sources/App/Formatting.swift",
+        "percent",
+        NodeKind::Method,
+    );
+    let ranking_formatted = find_node(
+        &nodes,
+        "Sources/App/Formatting.swift",
+        "formatted",
+        NodeKind::Method,
+    );
+    let percent_targets = outgoing_call_targets(&cg, &fmt_percent.id).await;
+    assert!(
+        !percent_targets.contains(&ranking_formatted.id),
+        "B3 `.formatted()` must not bind to RankingView.formatted: {percent_targets:?}"
+    );
+
+    // B4: `parseValue` & `parseDisposition` called from nested `func flush` are called by `load`.
+    let startup_load = find_node(
+        &nodes,
+        "Sources/App/NestedAndDefault.swift",
+        "load",
+        NodeKind::Method,
+    );
+    let load_targets = outgoing_call_targets(&cg, &startup_load.id).await;
+    for helper in ["parseValue", "parseDisposition"] {
+        let helper_node = find_node(
+            &nodes,
+            "Sources/App/NestedAndDefault.swift",
+            helper,
+            NodeKind::Method,
+        );
+        assert!(
+            load_targets.contains(&helper_node.id),
+            "B4 nested local call to `{helper}` missing: {load_targets:?}"
+        );
+    }
+
+    // B5: `SummaryHero.body` calls `uptime`, while `uptime` must NOT call `SummaryHero.body`.
+    let hero_body = find_node(
+        &nodes,
+        "Sources/App/Views.swift",
+        "body",
+        NodeKind::Property,
+    );
+    let hero_uptime = find_node(
+        &nodes,
+        "Sources/App/Views.swift",
+        "uptime",
+        NodeKind::Property,
+    );
+    let body_targets = outgoing_call_targets(&cg, &hero_body.id).await;
+    let uptime_targets = outgoing_call_targets(&cg, &hero_uptime.id).await;
+    assert!(
+        body_targets.contains(&hero_uptime.id),
+        "B5 body should read uptime: {body_targets:?}"
+    );
+    assert!(
+        !uptime_targets.contains(&hero_body.id),
+        "B5 `.body.weight()` must not emit uptime -> body recursion: {uptime_targets:?}"
+    );
+
+    // B6: `installedTerminals()` resolves to `installedTerminals(isInstalled:)` (no self-loop),
+    // extension `SummaryTile.init` has no self-loop, `DevCollector.appleSignature` has caller,
+    // and variadic `log("one", "two")` resolves.
+    let term_zero = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Terminals.swift"
+                && n.kind == NodeKind::Method
+                && n.name == "installedTerminals"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("installedTerminals()"))
+        })
+        .expect("installedTerminals()");
+    let term_pred = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Terminals.swift"
+                && n.kind == NodeKind::Method
+                && n.name == "installedTerminals"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("isInstalled:"))
+        })
+        .expect("installedTerminals(isInstalled:)");
+    let term_targets = outgoing_call_targets(&cg, &term_zero.id).await;
+    assert_eq!(
+        term_targets,
+        vec![term_pred.id.clone()],
+        "B6a installedTerminals() must target isInstalled overload: {term_targets:?}"
+    );
+
+    let ext_tile_init = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Views.swift"
+                && n.kind == NodeKind::Constructor
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| !s.contains("visual:"))
+        })
+        .expect("extension SummaryTile.init(title:)");
+    let struct_tile_init = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Views.swift"
+                && n.kind == NodeKind::Constructor
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("visual:"))
+        })
+        .expect("struct SummaryTile.init(title:visual:)");
+    let tile_targets = outgoing_call_targets(&cg, &ext_tile_init.id).await;
+    assert!(
+        !tile_targets.contains(&ext_tile_init.id),
+        "B6b extension SummaryTile.init must not self-recurse: {tile_targets:?}"
+    );
+    assert!(
+        tile_targets.contains(&struct_tile_init.id),
+        "B6b extension SummaryTile.init should target visual overload: {tile_targets:?}"
+    );
+
+    let apple_sig = find_node(
+        &nodes,
+        "Sources/App/NestedAndDefault.swift",
+        "appleSignature",
+        NodeKind::Method,
+    );
+    let apple_callers = call_source_nodes(&cg, &nodes, apple_sig).await;
+    assert_eq!(
+        apple_callers.len(),
+        1,
+        "B6c default param ref caller missing: {apple_callers:?}"
+    );
+
+    let emit_logs = find_node(
+        &nodes,
+        "Sources/App/Terminals.swift",
+        "emitLogs",
+        NodeKind::Method,
+    );
+    let log_fn = find_node(
+        &nodes,
+        "Sources/App/Terminals.swift",
+        "log",
+        NodeKind::Method,
+    );
+    let emit_targets = outgoing_call_targets(&cg, &emit_logs.id).await;
+    assert!(
+        emit_targets.contains(&log_fn.id),
+        "B6 variadic log(\"one\", \"two\") must still resolve: {emit_targets:?}"
+    );
+}
+
+/// Catches: `let x = f(a: 1) { }`, which tree-sitter parses as a call on the
+/// call `f(a: 1)`, dropping the edge (selector without the closure, plus a
+/// junk reference for the wrapper at the same site).
+#[tokio::test]
+async fn swift_trailing_closure_in_initializer_keeps_its_edge() {
+    let (_dir, cg) = index_files(&[(
+        "Gate.swift",
+        r#"struct Command { var destination: String }
+struct Gate {
+    func applyEdit(to command: inout Command, _ mutation: (inout Command) -> Void) -> Bool { true }
+}
+enum Bench {
+    static func median(runs: Int, _ body: () -> Void) -> Double { 0 }
+}
+func caller() {
+    let gate = Gate()
+    var command = Command(destination: "/B")
+    let accepted = gate.applyEdit(to: &command) { $0.destination = "/C" }
+    let time = Bench.median(runs: 7) { }
+    _ = (accepted, time)
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let apply = find_node(&nodes, "Gate.swift", "applyEdit", NodeKind::Method);
+    let median = find_node(&nodes, "Gate.swift", "median", NodeKind::Method);
+    let caller = find_node(&nodes, "Gate.swift", "caller", NodeKind::Function);
+    let targets = outgoing_call_targets(&cg, &caller.id).await;
+    assert!(targets.contains(&apply.id), "{targets:?}");
+    assert!(targets.contains(&median.id), "{targets:?}");
+}
+
+/// Catches: a SwiftUI-style modifier declared in `extension View` losing its
+/// edge when called on a framework type (`HStack(...)`), while a framework
+/// static call (`DispatchTime.now()`) must not bind to a project type's `now`.
+#[tokio::test]
+async fn swift_unindexed_receiver_reaches_protocol_extensions_only() {
+    let (_dir, cg) = index_files(&[(
+        "Views.swift",
+        r#"extension View {
+    func warningBanner(color: Int) -> some View { self }
+}
+final class TestClock { func now() -> Int { 0 } }
+struct Screen {
+    func body() {
+        _ = HStack(spacing: 10) { }.warningBanner(color: 1)
+        _ = DispatchTime.now()
+    }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let banner = find_node(&nodes, "Views.swift", "warningBanner", NodeKind::Method);
+    let now = find_node(&nodes, "Views.swift", "now", NodeKind::Method);
+    let body = find_node(&nodes, "Views.swift", "body", NodeKind::Method);
+    let targets = outgoing_call_targets(&cg, &body.id).await;
+    assert!(targets.contains(&banner.id), "{targets:?}");
+    assert!(!targets.contains(&now.id), "{targets:?}");
+}
+
+/// Catches: `super.method()` binding to the calling method itself instead of
+/// the superclass member (or to nothing when the superclass is external).
+#[tokio::test]
+async fn swift_super_calls_resolve_to_the_superclass() {
+    let (_dir, cg) = index_files(&[(
+        "Super.swift",
+        r#"class Base {
+    init() {}
+    func refresh() {}
+}
+final class Child: Base {
+    override init() { super.init() }
+    override func refresh() { super.refresh() }
+}
+final class Panel: NSObject {
+    override init() { super.init() }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let in_file = |owner: &str, name: &str| {
+        nodes
+            .iter()
+            .find(|n| n.name == name && n.qualified_name.contains(&format!("::{owner}::")))
+            .unwrap_or_else(|| panic!("missing {owner}.{name}"))
+    };
+    let base_refresh = in_file("Base", "refresh");
+    let base_init = in_file("Base", "init");
+    let child_refresh = in_file("Child", "refresh");
+    let child_init = in_file("Child", "init");
+    let panel_init = in_file("Panel", "init");
+
+    assert_eq!(
+        outgoing_call_targets(&cg, &child_refresh.id).await,
+        vec![base_refresh.id.clone()]
+    );
+    assert_eq!(
+        outgoing_call_targets(&cg, &child_init.id).await,
+        vec![base_init.id.clone()]
+    );
+    assert!(outgoing_call_targets(&cg, &panel_init.id).await.is_empty());
+}
+
+/// Catches: names bound by `case` patterns (`case .file(let path, _)`,
+/// `case let .other(name)`, `if case`, `for case`) being read as the enclosing
+/// type's computed property of the same name, which forged self-recursion.
+#[tokio::test]
+async fn swift_case_pattern_bindings_shadow_computed_properties() {
+    let (_dir, cg) = index_files(&[(
+        "Source.swift",
+        r#"enum Source {
+    case file(String, Int)
+    case other(String)
+    var path: String {
+        switch self {
+        case .file(let path, _): path
+        case let .other(path): path
+        }
+    }
+    var name: String {
+        if case .file(let name, _) = self { return name }
+        for case let .other(name) in [self] { return name }
+        return path
+    }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let path = find_node(&nodes, "Source.swift", "path", NodeKind::Property);
+    let name = find_node(&nodes, "Source.swift", "name", NodeKind::Property);
+    assert!(outgoing_call_targets(&cg, &path.id).await.is_empty());
+    assert_eq!(
+        outgoing_call_targets(&cg, &name.id).await,
+        vec![path.id.clone()]
+    );
+}
+
+/// Catches: a single unlabeled argument carrying no selector, so
+/// `append(row)` inside `append(optional:key:)` bound to the caller itself
+/// instead of `Array.append(_:)`.
+#[tokio::test]
+async fn swift_single_unlabeled_argument_checks_arity() {
+    let (_dir, cg) = index_files(&[(
+        "Rows.swift",
+        r#"struct Row { let key: String }
+extension Array where Element == Row {
+    mutating func append(optional value: String?, key: String) {
+        guard value != nil else { return }
+        append(Row(key: key))
+    }
+}
+func helper(_ x: Int) {}
+func useHelper() { helper(1) }
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let append = find_node(&nodes, "Rows.swift", "append", NodeKind::Method);
+    let helper = find_node(&nodes, "Rows.swift", "helper", NodeKind::Function);
+    let use_helper = find_node(&nodes, "Rows.swift", "useHelper", NodeKind::Function);
+    assert!(!outgoing_call_targets(&cg, &append.id)
+        .await
+        .contains(&append.id));
+    assert_eq!(
+        outgoing_call_targets(&cg, &use_helper.id).await,
+        vec![helper.id.clone()]
+    );
+}
+
+/// Catches: compound-name function references (`deleteProject(id:)`,
+/// `Locator.files(in:)`) losing their labels, and `try`/`await` calls with a
+/// trailing closure in an initializer losing the closure from their selector.
+#[tokio::test]
+async fn swift_compound_name_refs_and_try_trailing_closures_resolve() {
+    let (_dir, cg) = index_files(&[(
+        "Refs.swift",
+        r#"enum Locator { static func files(in folder: String) -> [String] { [] } }
+struct Repo {
+    func withStatement<T>(_ sql: String, _ body: (Int) throws -> T) throws -> T { try body(0) }
+}
+struct Screen {
+    func deleteProject(id: Int) {}
+    func wire(repo: Repo) throws {
+        let onDelete: (Int) -> Void = deleteProject(id:)
+        let listing: (String) -> [String] = Locator.files(in:)
+        let rows = try repo.withStatement("select") { $0 }
+        _ = (onDelete, listing, rows)
+    }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let wire = find_node(&nodes, "Refs.swift", "wire", NodeKind::Method);
+    let targets = outgoing_call_targets(&cg, &wire.id).await;
+    for name in ["deleteProject", "files", "withStatement"] {
+        let target = nodes
+            .iter()
+            .find(|n| n.name == name && n.kind == NodeKind::Method)
+            .expect(name);
+        assert!(targets.contains(&target.id), "{name}: {targets:?}");
+    }
+}
+
+/// Catches: a bare call binding to a same-named method of an unrelated type
+/// (`select(x)` inside a view reaching another model's `select(_:)`), and a
+/// framework receiver binding to a project protocol requirement.
+#[tokio::test]
+async fn swift_bare_calls_stay_within_the_callers_types() {
+    let (_dir, cg) = index_files(&[(
+        "Bare.swift",
+        r#"protocol Controlling { func stop() }
+final class OtherModel { func select(_ id: Int) {} }
+class BaseView { func refresh() {} }
+func topLevel(_ x: Int) {}
+final class Screen: BaseView {
+    let select: (Int) -> Void = { _ in }
+    func pick(sound: NSSound) {
+        select(1)
+        refresh()
+        topLevel(1)
+        sound.stop()
+    }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let pick = find_node(&nodes, "Bare.swift", "pick", NodeKind::Method);
+    let other_select = find_node(&nodes, "Bare.swift", "select", NodeKind::Method);
+    let refresh = find_node(&nodes, "Bare.swift", "refresh", NodeKind::Method);
+    let top_level = find_node(&nodes, "Bare.swift", "topLevel", NodeKind::Function);
+    let stop = find_node(&nodes, "Bare.swift", "stop", NodeKind::Method);
+    let targets = outgoing_call_targets(&cg, &pick.id).await;
+    assert!(!targets.contains(&other_select.id), "{targets:?}");
+    assert!(!targets.contains(&stop.id), "{targets:?}");
+    assert!(targets.contains(&refresh.id), "{targets:?}");
+    assert!(targets.contains(&top_level.id), "{targets:?}");
+}
+
+/// Catches: implicit member calls (`.make(kind:)`, `.unknown(_:)`) being
+/// treated as bare calls, and binding to a project static member that does
+/// not produce the contextual type (`.seconds(2)` is `Duration.seconds`).
+#[tokio::test]
+async fn swift_implicit_member_calls_need_the_contextual_type() {
+    let (_dir, cg) = index_files(&[(
+        "Implicit.swift",
+        r#"struct Event {
+    static func make(kind: Int) -> Event { Event() }
+    static func unknown(_ id: String) -> Self { Self() }
+}
+enum TimeParse {
+    static func seconds(_ value: Any?) -> Double? { nil }
+}
+struct Recorder {
+    func record() -> [Event] {
+        [.make(kind: 1), .unknown("x")]
+    }
+    func wait() async throws {
+        try await Task.sleep(for: .seconds(2))
+    }
+}
+"#,
+    )])
+    .await;
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+    let make = find_node(&nodes, "Implicit.swift", "make", NodeKind::Method);
+    let unknown = find_node(&nodes, "Implicit.swift", "unknown", NodeKind::Method);
+    let seconds = find_node(&nodes, "Implicit.swift", "seconds", NodeKind::Method);
+    let record = find_node(&nodes, "Implicit.swift", "record", NodeKind::Method);
+    let wait = find_node(&nodes, "Implicit.swift", "wait", NodeKind::Method);
+    let record_targets = outgoing_call_targets(&cg, &record.id).await;
+    assert!(record_targets.contains(&make.id), "{record_targets:?}");
+    assert!(record_targets.contains(&unknown.id), "{record_targets:?}");
+    assert!(!outgoing_call_targets(&cg, &wait.id)
+        .await
+        .contains(&seconds.id));
+}

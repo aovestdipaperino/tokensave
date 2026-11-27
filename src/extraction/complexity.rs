@@ -259,7 +259,9 @@ fn is_logical_operator(node: TsNode<'_>, source: &[u8]) -> bool {
     // Common binary-expression node kinds across grammars.
     if !(kind.contains("binary_expression")
         || kind == "boolean_operator"
-        || kind == "logical_expression")
+        || kind == "logical_expression"
+        || kind == "conjunction_expression"
+        || kind == "disjunction_expression")
     {
         return false;
     }
@@ -1136,18 +1138,17 @@ pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     operand_types: &[],
 };
 
+/// Swift complexity and Halstead token configuration matching `tree-sitter-swift` 0.7.3 node kinds.
 pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &[
         "if_statement",
         "switch_entry",
         "guard_statement",
         "catch_keyword",
+        "ternary_expression",
+        "nil_coalescing_expression",
     ],
-    loop_types: &[
-        "for_in_statement",
-        "while_statement",
-        "repeat_while_statement",
-    ],
+    loop_types: &["for_statement", "while_statement", "repeat_while_statement"],
     return_types: &["control_transfer_statement"],
     // tree-sitter-swift has no block node: every body (function, `if`,
     // loop, closure) wraps its statements in a `statements` node.
@@ -1169,8 +1170,48 @@ pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "XCTAssertNotNil",
     ],
     macro_invocation_types: &[],
-    operator_types: &[],
-    operand_types: &[],
+    operator_types: &[
+        "additive_expression",
+        "multiplicative_expression",
+        "comparison_expression",
+        "equality_expression",
+        "conjunction_expression",
+        "disjunction_expression",
+        "bitwise_operation",
+        "infix_expression",
+        "prefix_expression",
+        "postfix_expression",
+        "assignment",
+        "ternary_expression",
+        "nil_coalescing_expression",
+        "range_expression",
+        "open_start_range_expression",
+        "open_end_range_expression",
+        "call_expression",
+        "navigation_expression",
+        "try_expression",
+        "await_expression",
+        "as_expression",
+        "check_expression",
+        "constructor_expression",
+    ],
+    operand_types: &[
+        "simple_identifier",
+        "type_identifier",
+        "integer_literal",
+        "hex_literal",
+        "oct_literal",
+        "bin_literal",
+        "real_literal",
+        "boolean_literal",
+        "line_string_literal",
+        "multi_line_string_literal",
+        "raw_string_literal",
+        "regex_literal",
+        "nil",
+        "self_expression",
+        "super_expression",
+    ],
 };
 
 #[cfg(feature = "lang-bash")]

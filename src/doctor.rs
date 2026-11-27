@@ -64,18 +64,15 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
             home: home.clone(),
             project_path: project_path.clone(),
         };
-        let agents_to_check: Vec<Box<dyn agents::AgentIntegration>> = match agent_filter {
+        let installed = crate::user_config::UserConfig::load().installed_agents;
+        match agent_filter {
             Some(id) => match agents::get_integration(id) {
-                Ok(ag) => vec![ag],
-                Err(e) => {
-                    dc.fail(&format!("{e}"));
-                    vec![]
-                }
+                Ok(ag) => check_requested_agent(&mut dc, ag.as_ref(), &hctx, &installed),
+                Err(e) => dc.fail(&format!("{e}")),
             },
-            None => agents::all_integrations(),
-        };
-        for ag in &agents_to_check {
-            ag.healthcheck(&mut dc, &hctx);
+            None => {
+                check_agents(&mut dc, &agents::all_integrations(), &hctx, &installed);
+            }
         }
     } else {
         dc.fail("Could not determine home directory");
@@ -91,6 +88,126 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
         match serde_json::to_string_pretty(&reports) {
             Ok(json) => println!("{json}"),
             Err(e) => eprintln!("Could not serialize the Caveman report: {e}"),
+        }
+    }
+}
+
+/// What [`check_agents`] found, for the summary and for tests.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AgentOverview {
+    /// Agents checked in full because tokensave is installed in them.
+    installed: Vec<&'static str>,
+    /// Agents checked in full because tokensave-owned content remains
+    /// although they are not registered.
+    leftover: Vec<&'static str>,
+    /// Agents present on this machine without tokensave: `(name, id)`.
+    detected_absent: Vec<(&'static str, &'static str)>,
+    /// Agents neither installed nor detected.
+    absent: Vec<&'static str>,
+}
+
+/// Check every agent integration, counting failures only for agents where
+/// tokensave is installed or has left content behind (#1116).
+///
+/// An agent the user never set up is not applicable: it is listed once with
+/// the command that adds it, and adds nothing to the issue or warning totals.
+fn check_agents(
+    dc: &mut DoctorCounters,
+    all: &[Box<dyn agents::AgentIntegration>],
+    hctx: &HealthcheckContext,
+    installed: &[String],
+) -> AgentOverview {
+    use agents::IntegrationPresence;
+    let mut overview = AgentOverview::default();
+    for ag in all {
+        match agents::integration_presence(ag.as_ref(), &hctx.home, installed) {
+            IntegrationPresence::Installed => {
+                ag.healthcheck(dc, hctx);
+                overview.installed.push(ag.name());
+            }
+            IntegrationPresence::Leftover => {
+                ag.healthcheck(dc, hctx);
+                dc.warn(&format!(
+                    "{} has leftover tokensave content but is not registered as installed — \
+                     run `tokensave install --agent {id}` to repair it, or \
+                     `tokensave uninstall --agent {id}` to finish removing it",
+                    ag.name(),
+                    id = ag.id()
+                ));
+                overview.leftover.push(ag.name());
+            }
+            IntegrationPresence::Absent { detected: true } => {
+                overview.detected_absent.push((ag.name(), ag.id()));
+            }
+            IntegrationPresence::Absent { detected: false } => {
+                overview.absent.push(ag.name());
+            }
+        }
+    }
+    print_agent_overview(dc, &overview);
+    overview
+}
+
+/// Print the agent integration summary (#1116).
+fn print_agent_overview(dc: &mut DoctorCounters, overview: &AgentOverview) {
+    eprintln!("\n\x1b[1mAgent integrations\x1b[0m");
+    if overview.installed.is_empty() && overview.leftover.is_empty() {
+        dc.warn("tokensave is not installed in any agent — run `tokensave install`");
+    } else if !overview.installed.is_empty() {
+        dc.pass(&format!("Installed: {}", overview.installed.join(", ")));
+    }
+    if !overview.leftover.is_empty() {
+        dc.info(&format!(
+            "Partially installed or incompletely removed: {}",
+            overview.leftover.join(", ")
+        ));
+    }
+    if !overview.detected_absent.is_empty() {
+        let names: Vec<_> = overview.detected_absent.iter().map(|(n, _)| *n).collect();
+        dc.info(&format!(
+            "Detected without tokensave (not checked): {}",
+            names.join(", ")
+        ));
+        let commands: Vec<_> = overview
+            .detected_absent
+            .iter()
+            .map(|(_, id)| format!("tokensave install --agent {id}"))
+            .collect();
+        dc.info(&format!("  To add one: {}", commands.join(" / ")));
+    }
+    if !overview.absent.is_empty() {
+        dc.info(&format!(
+            "Not installed (not applicable): {}",
+            overview.absent.join(", ")
+        ));
+    }
+}
+
+/// `doctor --agent ID`: the user asked about this agent, so it is checked in
+/// full when tokensave is in it; otherwise one line says so instead of a
+/// cascade of missing-file failures (#1116).
+fn check_requested_agent(
+    dc: &mut DoctorCounters,
+    ag: &dyn agents::AgentIntegration,
+    hctx: &HealthcheckContext,
+    installed: &[String],
+) {
+    match agents::integration_presence(ag, &hctx.home, installed) {
+        agents::IntegrationPresence::Absent { detected } => {
+            eprintln!("\n\x1b[1m{} integration\x1b[0m", ag.name());
+            let found = if detected {
+                "is on this machine, but tokensave is not installed in it"
+            } else {
+                "was not found and tokensave is not installed in it"
+            };
+            dc.warn(&format!(
+                "{} {found} — run `tokensave install --agent {}`",
+                ag.name(),
+                ag.id()
+            ));
+        }
+        agents::IntegrationPresence::Installed | agents::IntegrationPresence::Leftover => {
+            ag.healthcheck(dc, hctx);
         }
     }
 }
@@ -488,6 +605,40 @@ fn check_user_config(dc: &mut DoctorCounters) {
             "auto_init off ({source}): run `tokensave init` in new repositories"
         ));
     }
+    let (off, unknown) =
+        disabled_tool_areas_report(&crate::user_config::disabled_tool_areas_setting());
+    for line in off {
+        dc.info(&line);
+    }
+    if let Some(line) = unknown {
+        dc.warn(&line);
+    }
+}
+
+/// The doctor lines for the `disabled_tool_areas` setting: one line for each
+/// area that is off, with the tools that the MCP server does not run, and a
+/// warning for the values that name no area. No line when the setting is
+/// empty.
+fn disabled_tool_areas_report(configured: &[String]) -> (Vec<String>, Option<String>) {
+    use crate::mcp::tools::{partition_tool_areas, tools_in_area, DISABLED_TOOL_AREAS_SETTING};
+    let (areas, unknown) = partition_tool_areas(configured);
+    let off = areas
+        .iter()
+        .map(|area| {
+            format!(
+                "Tool area \"{area}\" off ({DISABLED_TOOL_AREAS_SETTING}): the MCP server \
+                 does not list or run {}",
+                tools_in_area(area).join(", ")
+            )
+        })
+        .collect();
+    let unknown = (!unknown.is_empty()).then(|| {
+        format!(
+            "{DISABLED_TOOL_AREAS_SETTING} names no tool area: {}",
+            unknown.join(", ")
+        )
+    });
+    (off, unknown)
 }
 
 /// Check network connectivity.
@@ -579,14 +730,72 @@ fn check_hook_freshness(dc: &mut DoctorCounters, project_path: &std::path::Path)
 mod tests {
     use super::*;
 
+    #[test]
+    fn doctor_reports_each_disabled_tool_area_with_its_tools() {
+        let configured =
+            |names: &[&str]| -> Vec<String> { names.iter().map(ToString::to_string).collect() };
+        // The default: nothing is off, and doctor prints no line.
+        assert_eq!(disabled_tool_areas_report(&[]), (Vec::new(), None));
+
+        let (off, unknown) = disabled_tool_areas_report(&configured(&[" Memory ", "git"]));
+        assert_eq!(unknown, None);
+        assert_eq!(off.len(), 2, "{off:?}");
+        let memory = off.iter().find(|line| line.contains("\"memory\"")).unwrap();
+        assert!(memory.contains("disabled_tool_areas"), "{memory}");
+        assert!(memory.contains("tokensave_session_recall"), "{memory}");
+        assert!(!memory.contains("tokensave_blame"), "{memory}");
+        let git = off.iter().find(|line| line.contains("\"git\"")).unwrap();
+        assert!(git.contains("tokensave_blame"), "{git}");
+        // A core tool is in no area, so no line names one.
+        assert!(off.iter().all(|line| !line.contains("tokensave_search")));
+
+        let (off, unknown) = disabled_tool_areas_report(&configured(&["nope", "all"]));
+        assert_eq!(off, Vec::<String>::new());
+        assert_eq!(
+            unknown.as_deref(),
+            Some("disabled_tool_areas names no tool area: nope, all")
+        );
+    }
+
     /// A project directory with an index of `db_bytes`, plus a small WAL, so
-    /// the size check has something real to stat.
+    /// the size check has something real to stat. It also writes the
+    /// `config.json` that `init` writes, without which a database in the home
+    /// directory is a stray file rather than an indexed home (#1152).
     fn project_with_index(root: &Path, db_bytes: u64) {
+        stray_database(root, db_bytes);
+        let dir = crate::config::get_tokensave_dir(root);
+        std::fs::write(dir.join(crate::config::CONFIG_FILENAME), "{}").unwrap();
+    }
+
+    /// A database and WAL of `db_bytes` with no `config.json` next to them.
+    fn stray_database(root: &Path, db_bytes: u64) {
         let dir = crate::config::get_tokensave_dir(root);
         std::fs::create_dir_all(&dir).unwrap();
         let db = std::fs::File::create(dir.join("tokensave.db")).unwrap();
         db.set_len(db_bytes).unwrap();
         std::fs::write(dir.join("tokensave.db-wal"), vec![0u8; 512]).unwrap();
+    }
+
+    /// A stray database in the global state directory gets its own warning,
+    /// once, even when it is large and the user stands in the home directory,
+    /// and doctor does not report the home directory as unindexed (#1152).
+    #[test]
+    fn a_stray_home_database_is_reported_once_and_not_as_an_indexed_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        stray_database(&home, OVERSIZED_INDEX_BYTES + 1);
+
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &home, Some(&home));
+        assert_eq!(
+            dc.warnings, 1,
+            "a stray database must not also raise the size warning"
+        );
+        let warnings = crate::index_scope::scope_warnings(&home, Some(&home));
+        assert!(
+            warnings[0].contains("Ignoring a stray tokensave.db"),
+            "got: {warnings:?}"
+        );
     }
 
     /// The reported state: `$HOME` itself initialized as a project. It must
@@ -672,6 +881,124 @@ mod tests {
         let mut dc = DoctorCounters::new();
         check_index_scope_with(&mut dc, &work, Some(&home));
         assert_eq!(dc.warnings, 0);
+    }
+
+    // -- Agent presence (#1116) ---------------------------------------------
+
+    use crate::agents::AgentIntegration as _;
+
+    fn install_ctx(home: &Path) -> agents::InstallContext {
+        let bin = home.join("bin").join("tokensave");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        agents::InstallContext {
+            home: home.to_path_buf(),
+            tokensave_bin: bin.to_string_lossy().into_owned(),
+            tool_permissions: agents::expected_tool_perms(),
+            scope: agents::InstallScope::Global,
+            force_permission_style: false,
+        }
+    }
+
+    fn hctx(home: &Path) -> HealthcheckContext {
+        HealthcheckContext {
+            home: home.to_path_buf(),
+            project_path: home.to_path_buf(),
+        }
+    }
+
+    fn run_agent_checks(home: &Path, installed: &[&str]) -> (DoctorCounters, AgentOverview) {
+        let installed: Vec<String> = installed.iter().map(|s| (*s).to_string()).collect();
+        let mut dc = DoctorCounters::new();
+        let overview = check_agents(
+            &mut dc,
+            &agents::all_integrations(),
+            &hctx(home),
+            &installed,
+        );
+        (dc, overview)
+    }
+
+    /// A machine with no agent set up: nothing is broken, so the only finding
+    /// is the one actionable warning, not a failure per supported agent.
+    #[test]
+    fn a_clean_machine_reports_one_warning_and_no_issues() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dc, overview) = run_agent_checks(tmp.path(), &[]);
+        assert_eq!(dc.issues, 0);
+        assert_eq!(dc.warnings, 1, "only 'not installed in any agent'");
+        assert!(overview.installed.is_empty() && overview.leftover.is_empty());
+        assert_eq!(
+            overview.absent.len() + overview.detected_absent.len(),
+            agents::all_integrations().len()
+        );
+    }
+
+    /// One installed agent is checked; every other agent adds nothing to the
+    /// totals (the reported case: Codex healthy, eight issues from others).
+    #[test]
+    fn only_the_installed_agent_contributes_findings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let ctx = install_ctx(home);
+        agents::CodexIntegration.install(&ctx).unwrap();
+
+        let mut alone = DoctorCounters::new();
+        agents::CodexIntegration.healthcheck(&mut alone, &hctx(home));
+
+        let (dc, overview) = run_agent_checks(home, &["codex"]);
+        assert_eq!(overview.installed, vec!["Codex CLI"]);
+        assert!(overview.leftover.is_empty());
+        assert_eq!(dc.issues, alone.issues);
+        assert_eq!(dc.warnings, alone.warnings);
+        assert_eq!(dc.issues, 0, "a clean Codex install has no issues");
+    }
+
+    /// Rules left behind without an MCP registration is a partial install:
+    /// checked in full and flagged, even though `installed_agents` is empty.
+    #[test]
+    fn a_partial_installation_is_checked_and_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        agents::GeminiIntegration
+            .install(&install_ctx(home))
+            .unwrap();
+        std::fs::remove_file(home.join(".gemini").join("settings.json")).unwrap();
+
+        let (dc, overview) = run_agent_checks(home, &[]);
+        assert_eq!(overview.leftover, vec!["Gemini CLI"]);
+        assert!(dc.issues + dc.warnings > 0);
+    }
+
+    /// An agent removed with `uninstall` is not applicable any more, even
+    /// though the agent itself is still on the machine.
+    #[test]
+    fn an_intentionally_removed_agent_is_not_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let ctx = install_ctx(home);
+        agents::GeminiIntegration.install(&ctx).unwrap();
+        agents::GeminiIntegration.uninstall(&ctx).unwrap();
+        assert!(home.join(".gemini").is_dir(), "the agent itself stays");
+
+        let (dc, overview) = run_agent_checks(home, &[]);
+        assert!(overview.leftover.is_empty(), "{:?}", overview.leftover);
+        assert!(overview
+            .detected_absent
+            .iter()
+            .any(|(name, _)| *name == "Gemini CLI"));
+        assert_eq!(dc.issues, 0);
+        assert_eq!(dc.warnings, 1, "only 'not installed in any agent'");
+    }
+
+    /// A tracked agent whose files are gone is still checked, so the user
+    /// sees what is broken rather than a silent skip.
+    #[test]
+    fn a_registered_agent_with_missing_files_is_still_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dc, overview) = run_agent_checks(tmp.path(), &["gemini"]);
+        assert_eq!(overview.installed, vec!["Gemini CLI"]);
+        assert!(dc.issues + dc.warnings > 0);
     }
 
     #[test]

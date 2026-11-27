@@ -170,6 +170,9 @@ pub struct TokenSaveConfig {
     /// user changes it.
     #[serde(default = "default_auto_track")]
     pub auto_track: bool,
+    /// Enable experimental SCIP comparison for this project.
+    #[serde(default)]
+    pub enable_scip: bool,
     /// Automatically collect indexes for deleted Git branches on open and
     /// MCP freshness checks. Opt-in; `TOKENSAVE_AUTO_GC` overrides per run.
     #[serde(default)]
@@ -361,6 +364,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: default_auto_track(),
+            enable_scip: false,
             auto_gc: false,
             strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
@@ -904,14 +908,39 @@ pub fn discover_project(start: &Path) -> ProjectDiscovery {
     discover_project_from(start, crate::agents::home_dir().as_deref())
 }
 
+/// Whether `dir` holds the index of an initialized project.
+///
+/// A project is initialized when its state directory holds `tokensave.db`.
+/// The home directory is the exception: its state directory is the global
+/// one (`~/.tokensave`), so a database there counts only when `init` wrote it,
+/// which also writes `config.json`. A bare `tokensave.db` in the global
+/// directory would otherwise make the whole home directory the project of
+/// every folder below it that has no index of its own, and the first sync
+/// would then index all of it (#1152).
+pub fn holds_project_index(dir: &Path) -> bool {
+    holds_project_index_from(dir, crate::agents::home_dir().as_deref())
+}
+
+/// [`holds_project_index`] with the home directory passed in.
+pub fn holds_project_index_from(dir: &Path, home: Option<&Path>) -> bool {
+    let tokensave_dir = get_tokensave_dir(dir);
+    if !tokensave_dir.join("tokensave.db").exists() {
+        return false;
+    }
+    let is_global_state_dir =
+        home.is_some_and(|home| tokensave_dir == get_global_tokensave_dir(home));
+    !is_global_state_dir || tokensave_dir.join(CONFIG_FILENAME).is_file()
+}
+
 /// [`discover_project`] with the home directory passed in. `~/.tokensave/` is
-/// the global state directory, not a project, unless it holds a database.
+/// the global state directory, not a project, unless `init` made it one (see
+/// [`holds_project_index`]).
 fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery {
     let mut git_root: Option<PathBuf> = None;
     let mut crossed_repository = false;
     for dir in start.ancestors() {
         let tokensave_dir = get_tokensave_dir(dir);
-        let found = if tokensave_dir.join("tokensave.db").exists() {
+        let found = if holds_project_index_from(dir, home) {
             Some(ProjectDiscovery::Initialized(dir.to_path_buf()))
         } else if Some(dir) != home && tokensave_dir.join("config.json").is_file() {
             Some(ProjectDiscovery::Incomplete(dir.to_path_buf()))
@@ -1504,6 +1533,16 @@ mod tests {
     }
 
     #[test]
+    fn scip_defaults_to_disabled_in_new_and_existing_configurations() {
+        let default = TokenSaveConfig::default();
+        assert!(!default.enable_scip);
+        let mut json = serde_json::to_value(default).unwrap();
+        json.as_object_mut().unwrap().remove("enable_scip");
+        let config: TokenSaveConfig = serde_json::from_value(json).unwrap();
+        assert!(!config.enable_scip);
+    }
+
+    #[test]
     fn auto_track_defaults_to_on() {
         // #922: new branches are tracked without opting in.
         assert!(TokenSaveConfig::default().auto_track);
@@ -1560,7 +1599,7 @@ mod tests {
 mod discovery_tests {
     use super::{
         borrowed_worktree_root_from, discover_project_from, get_tokensave_dir,
-        git_hook_sync_root_from, ProjectDiscovery,
+        git_hook_sync_root_from, holds_project_index_from, ProjectDiscovery, CONFIG_FILENAME,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1825,6 +1864,63 @@ mod discovery_tests {
             discover_project_from(&start, Some(&home)),
             ProjectDiscovery::Uninitialized { git_root: None }
         );
+    }
+
+    /// A `tokensave.db` in `~/.tokensave` that `init` did not write (no
+    /// `config.json`) must not make the home directory a project (#1152):
+    /// every folder below it would serve the home index and sync all of it.
+    #[test]
+    fn stray_database_in_global_state_directory_is_not_a_project() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        init_project(&home);
+        let start = mkdirs(&home, &["work", "scratch"]);
+        assert!(!holds_project_index_from(&home, Some(&home)));
+        assert_eq!(
+            discover_project_from(&start, Some(&home)),
+            ProjectDiscovery::Uninitialized { git_root: None }
+        );
+    }
+
+    /// The stray global database must not hide a real project further down.
+    #[test]
+    fn stray_global_database_does_not_shadow_a_nested_project() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        init_project(&home);
+        let project = mkdirs(&home, &["work", "app"]);
+        init_project(&project);
+        let start = mkdirs(&project, &["src"]);
+        assert_eq!(
+            discover_project_from(&start, Some(&home)),
+            ProjectDiscovery::Initialized(project)
+        );
+    }
+
+    /// A home directory that `init` indexed on purpose keeps working.
+    #[test]
+    fn initialized_home_directory_is_still_a_project() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        init_project(&home);
+        fs::write(get_tokensave_dir(&home).join(CONFIG_FILENAME), "{}").unwrap();
+        let start = mkdirs(&home, &["work"]);
+        assert!(holds_project_index_from(&home, Some(&home)));
+        assert_eq!(
+            discover_project_from(&start, Some(&home)),
+            ProjectDiscovery::Initialized(home)
+        );
+    }
+
+    /// Outside the home directory a database alone still marks a project.
+    #[test]
+    fn database_outside_home_marks_a_project_without_config() {
+        let tmp = TempDir::new().unwrap();
+        let home = mkdirs(tmp.path(), &["home"]);
+        let project = mkdirs(tmp.path(), &["srv", "app"]);
+        init_project(&project);
+        assert!(holds_project_index_from(&project, Some(&home)));
+        assert!(holds_project_index_from(&project, None));
     }
 
     #[test]

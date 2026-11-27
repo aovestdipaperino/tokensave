@@ -140,7 +140,7 @@ fn invalid_project_log_level_is_a_clear_configuration_error() {
 }
 
 #[test]
-fn debug_hook_explains_denial_without_logging_shell_input() {
+fn debug_hook_explains_advice_without_logging_shell_input() {
     let project = tempfile::tempdir().expect("isolated project");
     let home = tempfile::tempdir().expect("isolated home");
     std::fs::write(
@@ -189,23 +189,17 @@ fn debug_hook_explains_denial_without_logging_shell_input() {
     );
     assert_eq!(off.stdout, debug.stdout);
     let decision: Value = serde_json::from_slice(&debug.stdout).expect("hook protocol JSON");
-    assert_eq!(decision["permission"], "deny");
+    assert!(decision["hookSpecificOutput"]
+        .get("permissionDecision")
+        .is_none());
+    assert!(decision["hookSpecificOutput"]["additionalContext"].is_string());
     let debug_events = events(&debug);
-    assert!(debug_events.iter().any(|e| {
-        e["operation"] == "grep_check"
-            && e["fields"]["tool"] == "grep"
-            && e["fields"]["check"] == "code_target_eligible"
-            && e["fields"]["passed"] == true
-    }));
-    assert!(debug_events
-        .iter()
-        .any(|e| e["fields"]["shape"] == "bare_symbol"));
     assert!(debug_events
         .iter()
         .any(|e| e["fields"]["outcome"] == "symbol_found"));
     assert!(debug_events
         .iter()
-        .any(|e| { e["operation"] == "grep_decision" && e["fields"]["decision"] == "deny" }));
+        .any(|e| { e["operation"] == "grep_decision" && e["fields"]["decision"] == "advise" }));
     let stderr = String::from_utf8_lossy(&debug.stderr);
     for secret in ["SecretArgument", "PrivateSymbolName", "lib.rs"] {
         assert!(!stderr.contains(secret));

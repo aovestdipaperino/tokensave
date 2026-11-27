@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
-use tokensave::types::{AmbiguousCall, Edge, EdgeKind, UnresolvedRef};
+use tokensave::types::{AmbiguousCall, Edge, EdgeKind, Node, NodeKind, UnresolvedRef, Visibility};
 
 // ---------------------------------------------------------------------------
 // Shared setup
@@ -1363,6 +1363,195 @@ async fn test_god_class() {
     assert!(
         text.contains("result_count"),
         "should have result_count key"
+    );
+}
+
+#[tokio::test]
+async fn test_god_class_filters_kinds_and_exclude_data_structs() {
+    let (_dir, cg) = setup_project().await;
+
+    let data_struct = Node {
+        id: "gc-data-struct".to_string(),
+        kind: NodeKind::Struct,
+        name: "PureDto".to_string(),
+        qualified_name: "PureDto".to_string(),
+        file_path: "src/dto.swift".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 10,
+        start_column: 0,
+        end_column: 1,
+        signature: None,
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    };
+    let mut dto_f1 = data_struct.clone();
+    dto_f1.id = "gc-dto-f1".to_string();
+    dto_f1.kind = NodeKind::Field;
+    dto_f1.name = "a".to_string();
+    dto_f1.qualified_name = "PureDto::a".to_string();
+    dto_f1.parent_id = Some("gc-data-struct".to_string());
+
+    let mut dto_f2 = dto_f1.clone();
+    dto_f2.id = "gc-dto-f2".to_string();
+    dto_f2.name = "b".to_string();
+    dto_f2.qualified_name = "PureDto::b".to_string();
+
+    let mut dto_f3 = dto_f1.clone();
+    dto_f3.id = "gc-dto-f3".to_string();
+    dto_f3.name = "c".to_string();
+    dto_f3.qualified_name = "PureDto::c".to_string();
+
+    let mut method_struct = data_struct.clone();
+    method_struct.id = "gc-method-struct".to_string();
+    method_struct.name = "RichStruct".to_string();
+    method_struct.qualified_name = "RichStruct".to_string();
+
+    let mut rich_m1 = dto_f1.clone();
+    rich_m1.id = "gc-rich-m1".to_string();
+    rich_m1.kind = NodeKind::Method;
+    rich_m1.name = "run".to_string();
+    rich_m1.qualified_name = "RichStruct::run".to_string();
+    rich_m1.parent_id = Some("gc-method-struct".to_string());
+
+    let mut data_class = data_struct.clone();
+    data_class.id = "gc-empty-class".to_string();
+    data_class.kind = NodeKind::Class;
+    data_class.name = "FieldClass".to_string();
+    data_class.qualified_name = "FieldClass".to_string();
+
+    let mut class_f1 = dto_f1.clone();
+    class_f1.id = "gc-cls-f1".to_string();
+    class_f1.name = "state".to_string();
+    class_f1.qualified_name = "FieldClass::state".to_string();
+    class_f1.parent_id = Some("gc-empty-class".to_string());
+
+    let mut class_f2 = class_f1.clone();
+    class_f2.id = "gc-cls-f2".to_string();
+    class_f2.name = "flag".to_string();
+    class_f2.qualified_name = "FieldClass::flag".to_string();
+
+    cg.db()
+        .insert_nodes(&[
+            data_struct,
+            dto_f1,
+            dto_f2,
+            dto_f3,
+            method_struct,
+            rich_m1,
+            data_class,
+            class_f1,
+            class_f2,
+        ])
+        .await
+        .unwrap();
+
+    // `exclude_data_structs: true` drops `PureDto` (struct with 0 methods)
+    // while keeping `RichStruct` (struct with methods > 0) and `FieldClass` (class).
+    let excluded = handle_tool_call(
+        &cg,
+        "tokensave_god_class",
+        json!({"limit": 10, "exclude_data_structs": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let excluded_json: Value = serde_json::from_str(extract_text(&excluded.value)).unwrap();
+    let names: Vec<&str> = excluded_json["ranking"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&"PureDto"),
+        "PureDto must be excluded: {names:?}"
+    );
+    assert!(
+        names.contains(&"RichStruct"),
+        "RichStruct must remain: {names:?}"
+    );
+    assert!(
+        names.contains(&"FieldClass"),
+        "FieldClass must remain: {names:?}"
+    );
+
+    // `kinds: ["class"]` keeps only classes.
+    let only_class = handle_tool_call(
+        &cg,
+        "tokensave_god_class",
+        json!({"limit": 10, "kinds": ["class"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let only_class_json: Value = serde_json::from_str(extract_text(&only_class.value)).unwrap();
+    let class_names: Vec<&str> = only_class_json["ranking"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str())
+        .collect();
+    assert_eq!(class_names, vec!["FieldClass"]);
+
+    // Invalid kind must return a Config error.
+    let invalid = handle_tool_call(
+        &cg,
+        "tokensave_god_class",
+        json!({"kinds": ["function"]}),
+        None,
+        None,
+    )
+    .await;
+    assert!(invalid.is_err(), "invalid kind must error");
+
+    let non_string_item = handle_tool_call(
+        &cg,
+        "tokensave_god_class",
+        json!({"kinds": [123]}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err_item) = non_string_item else {
+        panic!("non-string kind entry must error");
+    };
+    assert!(
+        err_item.to_string().contains("elements must be strings"),
+        "unexpected error: {err_item}"
+    );
+
+    let non_array = handle_tool_call(
+        &cg,
+        "tokensave_god_class",
+        json!({"kinds": "class"}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err_array) = non_array else {
+        panic!("non-array kinds must error");
+    };
+    assert!(
+        err_array.to_string().contains("must be an array"),
+        "unexpected error: {err_array}"
     );
 }
 
@@ -7601,4 +7790,79 @@ async fn create_file_bounds_content_by_max_file_size() {
         .unwrap()
         .contains("max_file_size"));
     assert!(!dir.path().join("big.txt").exists());
+}
+
+/// A session with `areas` turned off, as `disabled_tool_areas` sets it.
+fn session_with_disabled_areas(areas: &[&str]) -> tokensave::mcp::SessionState {
+    let session = tokensave::mcp::SessionState::new();
+    session.set_disabled_tool_areas(areas.iter().map(ToString::to_string).collect());
+    session
+}
+
+/// The node-not-found error of a core tool sends the agent to
+/// `tokensave_callers_for` only while its area is on. With the area turned
+/// off the agent cannot list that tool, so the error names only
+/// `tokensave_search`.
+#[tokio::test]
+async fn a_node_not_found_error_names_no_tool_of_a_disabled_area() {
+    let (_dir, cg) = setup_project().await;
+    for tool in ["tokensave_callers", "tokensave_callees"] {
+        let message = |session: tokensave::mcp::SessionState| {
+            let cg = &cg;
+            async move {
+                let result = tokensave::mcp::handle_tool_call_with_session(
+                    cg,
+                    tool,
+                    json!({"node_id": "helper"}),
+                    None,
+                    None,
+                    false,
+                    Some(&session),
+                )
+                .await;
+                let Err(err) = result else {
+                    panic!("expected an error for a nonexistent node_id")
+                };
+                format!("{err}")
+            }
+        };
+        let on = message(session_with_disabled_areas(&["git"])).await;
+        assert!(on.contains("tokensave_callers_for (via"), "{tool}: {on}");
+
+        let off = message(session_with_disabled_areas(&["navigate"])).await;
+        assert!(off.contains("node not found"), "{tool}: {off}");
+        assert!(!off.contains("tokensave_callers_for"), "{tool}: {off}");
+        assert!(!off.contains("tokensave_more"), "{tool}: {off}");
+        assert!(
+            off.contains("to look up by symbol name use tokensave_search."),
+            "{tool}: {off}"
+        );
+    }
+}
+
+/// With the `navigate` area turned off, a call by name to
+/// `tokensave_entities` still reports the companion documents, without the
+/// hint that sends the agent to `tokensave_doc`.
+#[tokio::test]
+#[cfg(feature = "lang-markdown")]
+async fn entities_gives_no_doc_hint_when_the_area_of_the_doc_tool_is_disabled() {
+    let (_dir, cg) = setup_documented_project().await;
+    let session = session_with_disabled_areas(&["navigate"]);
+    let result = tokensave::mcp::handle_tool_call_with_session(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/big_class.rs"}),
+        None,
+        None,
+        false,
+        Some(&session),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+    assert_eq!(parsed["doc_path"], json!(["src/big_class.readme.md"]));
+    assert!(parsed.get("doc_hint").is_none(), "{parsed:?}");
+    assert!(!text.contains("tokensave_doc"), "{text}");
 }

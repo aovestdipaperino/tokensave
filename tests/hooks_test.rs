@@ -373,7 +373,7 @@ fn test_kiro_allows_invalid_json() {
 
 // ============================================================================
 // Grep tool redirect — symbol-shaped patterns against code files should
-// redirect to tokensave_search (by name, or literal for call sites).
+// suggest indexed definitions and a fallback for text matches.
 // ============================================================================
 
 #[test]
@@ -1723,17 +1723,19 @@ fn test_claude_event_cwd_activates_the_guardrail() {
     let (_tmp, root) = indexed_project();
     let input = serde_json::json!({
         "cwd": root.to_string_lossy(),
+        "hook_event_name": "PreToolUse",
         "tool_name": "Grep",
         "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"},
     })
     .to_string();
-    assert!(
-        is_blocked(&evaluate_claude_pre_tool_use_with_env(
-            &input,
-            &env_not_indexed()
-        )),
-        "Claude's event cwd should decide the project too"
-    );
+    let output = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
+    let decision: serde_json::Value = serde_json::from_str(&output).expect("hook advice");
+    assert!(decision.get("permission").is_none());
+    let hook_output = &decision["hookSpecificOutput"];
+    assert!(hook_output.get("permissionDecision").is_none());
+    let advice = hook_output["additionalContext"].as_str().expect("advice");
+    assert!(advice.contains("native Grep results"));
+    assert!(advice.contains("tokensave_search"));
 }
 
 #[test]
@@ -1992,45 +1994,158 @@ fn indexed_project_with_code_dir(dir: &str) -> (tempfile::TempDir, PathBuf) {
     (tmp, root)
 }
 
-#[test]
-fn test_relative_target_resolves_against_the_event_cwd() {
-    let (_tmp, root) = indexed_project_with_code_dir("mypkg");
+fn claude_bash_at(cwd: &Path, command: &str) -> String {
     let input = serde_json::json!({
         "tool_name": "Bash",
-        "cwd": root.to_string_lossy(),
-        "tool_input": {"command": "grep -rn handle_request mypkg/"},
-    })
-    .to_string();
-    // The hook process itself sits outside any project, which is how a harness
-    // spawns it: the event's `cwd` is the only thing that can resolve `mypkg/`.
-    let result = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
-    assert!(
-        is_blocked(&result),
-        "a relative target must resolve against the event cwd, not the hook process cwd: {result}"
-    );
+        "cwd": cwd,
+        "tool_input": {"command": command},
+    });
+    evaluate_claude_pre_tool_use_with_env(&input.to_string(), &env_not_indexed())
 }
 
 #[test]
-fn test_relative_target_resolves_against_a_subdirectory_event_cwd() {
-    let (_tmp, root) = indexed_project();
+fn test_claude_bash_suggests_scoped_definitions_without_deciding_permission() {
+    let (_tmp, root) = indexed_project_with_nodes(&["verify"]);
     let nested = root.join("crate_a");
-    std::fs::create_dir_all(nested.join("mypkg")).expect("create nested code dir");
-    std::fs::write(
-        nested.join("mypkg").join("lib.rs"),
-        b"fn handle_request() {}",
+    let source_dir = nested.join("src");
+    std::fs::create_dir_all(&source_dir).expect("create source directory");
+    std::fs::write(source_dir.join("auth.rs"), "fn verify() {}\n// fn verify")
+        .expect("write source");
+
+    let directory_scope = format!("crate_a{0}src{0}", std::path::MAIN_SEPARATOR);
+    let file_scope = format!("{directory_scope}auth.rs");
+    for (command, scope) in [
+        ("grep -n 'fn verify' src/auth.rs", file_scope.as_str()),
+        ("grep -rn verify src/", directory_scope.as_str()),
+    ] {
+        let result = claude_bash_at(&nested, command);
+        let response: serde_json::Value = serde_json::from_str(&result).expect("hook output");
+        let output = &response["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreToolUse");
+        assert!(output.get("permissionDecision").is_none());
+        assert!(output.get("updatedInput").is_none());
+        assert!(response.get("permission").is_none());
+        let advice = output["additionalContext"].as_str().expect("search advice");
+        let (args, _) = advice
+            .split_once("tokensave_search ")
+            .expect("search call")
+            .1
+            .split_once(" when available.")
+            .expect("end of search call");
+        let args: serde_json::Value = serde_json::from_str(args).expect("search args");
+        assert_eq!(args["query"], "verify");
+        assert_eq!(
+            args["graph_root"],
+            serde_json::json!(root.canonicalize().expect("canonical root"))
+        );
+        assert_eq!(args["path_include"], serde_json::json!([scope]));
+        assert!(advice.contains("stale or unavailable"));
+    }
+
+    for command in [
+        "grep -Fn 'fn verify' src/auth.rs",
+        "grep -n '^fn verify' src/auth.rs",
+        "grep -n 'verify(' src/auth.rs",
+        "grep -vn verify src/auth.rs",
+        "grep -n verify src/auth.rs | head",
+        "grep -n verify src/auth.rs src/other.rs",
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n 'fn verify' src/auth.rs",
+    ] {
+        assert!(claude_bash_at(&nested, command).is_empty(), "{command}");
+    }
+    assert!(!claude_bash_at(
+        &nested,
+        "TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n verify src/auth.rs"
     )
-    .expect("write source");
-    let input = serde_json::json!({
-        "tool_name": "Bash",
-        "cwd": nested.to_string_lossy(),
-        "tool_input": {"command": "grep -rn handle_request mypkg/"},
-    })
-    .to_string();
-    let result = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
-    assert!(
-        is_blocked(&result),
-        "a session in a subdirectory spells its targets relative to that subdirectory: {result}"
-    );
+    .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_bash_advises_on_indexed_javascript_declarations() {
+    let project = tempfile::tempdir().expect("create project");
+    let root = project.path();
+    let source_dir = root.join("src");
+    std::fs::create_dir(&source_dir).expect("create source directory");
+    std::fs::write(
+        source_dir.join("example.js"),
+        "const EXAMPLE_VALUE = 42;\nlet readValue = () => EXAMPLE_VALUE;\n\
+         var legacyValue = EXAMPLE_VALUE;\nfunction getValue() { return readValue(); }\n",
+    )
+    .expect("write JavaScript fixture");
+    std::fs::write(root.join("README.md"), "const EXAMPLE_VALUE").expect("write Markdown");
+    std::fs::write(source_dir.join("example.rs"), "// const EXAMPLE_VALUE")
+        .expect("write Rust fixture");
+
+    let index = tokensave::tokensave::TokenSave::init(root)
+        .await
+        .expect("initialize index");
+    index.sync().await.expect("index fixture");
+    drop(index);
+
+    for (pattern, symbol) in [
+        ("const EXAMPLE_VALUE", "EXAMPLE_VALUE"),
+        ("let readValue", "readValue"),
+        ("function getValue", "getValue"),
+        ("EXAMPLE_VALUE", "EXAMPLE_VALUE"),
+    ] {
+        let command = format!("grep -n '{pattern}' src/example.js");
+        let result = claude_bash_at(root, &command);
+        let response: serde_json::Value = serde_json::from_str(&result).expect(&command);
+        let output = &response["hookSpecificOutput"];
+        assert!(output.get("permissionDecision").is_none());
+        assert!(output.get("updatedInput").is_none());
+        let scope = format!("src{}example.js", std::path::MAIN_SEPARATOR);
+        let args = serde_json::json!({
+            "query": symbol,
+            "graph_root": root.canonicalize().expect("canonical project root"),
+            "path_include": [scope],
+        });
+        let advice = output["additionalContext"].as_str().expect("search advice");
+        assert!(
+            advice.contains(&format!("tokensave_search {args}")),
+            "{command}"
+        );
+    }
+
+    for command in [
+        "grep -n 'var legacyValue' src/example.js",
+        "grep -n 'let unknown' src/example.js",
+        "grep -n 'const EXAMPLE_VALUE' README.md",
+        "grep -n 'const EXAMPLE_VALUE' src/example.rs",
+        "grep -n 'const EXAMPLE_VALUE is documented' src/example.js",
+        "grep -n '^const EXAMPLE_VALUE' src/example.js",
+        "grep -n 'const .*VALUE' src/example.js",
+        "grep -rn 'const EXAMPLE_VALUE' src/",
+        "tokensave grep grep -n 'const EXAMPLE_VALUE' src/example.js",
+    ] {
+        assert!(claude_bash_at(root, command).is_empty(), "{command}");
+    }
+}
+
+#[test]
+fn claude_bash_advises_on_var_prefix_when_name_is_indexed() {
+    let (_tmp, root) = indexed_project_with_nodes(&["legacyValue"]);
+    std::fs::write(root.join("example.js"), "var legacyValue = 42;").expect("write source");
+    let result = claude_bash_at(&root, "rg -n 'var legacyValue' example.js");
+    let response: serde_json::Value = serde_json::from_str(&result).expect("search advice");
+    let output = &response["hookSpecificOutput"];
+    assert!(output.get("permissionDecision").is_none());
+    assert!(output["additionalContext"]
+        .as_str()
+        .is_some_and(|advice| advice.contains(r#""query":"legacyValue""#)));
+}
+
+#[test]
+fn test_claude_bash_falls_through_with_missing_unreadable_or_stale_index() {
+    let (_tmp, missing_root) = indexed_project_with_nodes(&["verify"]);
+    std::fs::remove_file(tokensave::config::get_tokensave_dir(&missing_root).join("tokensave.db"))
+        .expect("remove index");
+    let (_tmp2, unreadable_root) = indexed_project();
+    let (_tmp3, stale_root) = indexed_project_with_nodes(&["old_name"]);
+    for root in [&missing_root, &unreadable_root, &stale_root] {
+        std::fs::write(root.join("auth.rs"), "fn verify() {}").expect("write source");
+        assert!(claude_bash_at(root, "grep -n 'fn verify' auth.rs").is_empty());
+    }
 }
 
 #[test]
@@ -2088,6 +2203,73 @@ fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
 
 fn grep_input(pattern: &str) -> String {
     format!(r#"{{"pattern": "{pattern}", "path": "src/main.rs", "output_mode": "content"}}"#,)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grep_denial_distinguishes_definitions_from_text_references() {
+    let project = tempfile::tempdir().expect("create project");
+    let root = project.path();
+    let source = "example.js";
+    std::fs::write(
+        root.join(source),
+        "const EXAMPLE_VALUE = 42;\nconst currentValue = EXAMPLE_VALUE;\n\
+         let mutableValue = currentValue;\n\
+         function readValue() { return mutableValue; }\n// EXAMPLE_VALUE reference\n",
+    )
+    .expect("write JavaScript fixture");
+    let index = tokensave::tokensave::TokenSave::init(root)
+        .await
+        .expect("initialize index");
+    index.sync().await.expect("index JavaScript fixture");
+    drop(index);
+
+    let env = env_rooted_at(root);
+    for symbol in ["EXAMPLE_VALUE", "currentValue", "readValue"] {
+        let input = serde_json::json!({
+            "pattern": symbol,
+            "path": source,
+            "output_mode": "content",
+        });
+        let result = evaluate_hook_decision_with_env(&input.to_string(), &env);
+        assert!(is_blocked(&result), "{symbol}: {result}");
+        let reason = get_block_reason(&result);
+        let args = serde_json::json!({ "query": symbol });
+        assert!(reason.contains(&format!("tokensave_search {args} for indexed definitions")));
+        assert!(reason.contains("references and comments"));
+        assert!(reason.contains("original pattern, paths, and filters"));
+        assert!(reason.contains("`tokensave grep`"));
+        assert!(!reason.contains(&format!("{symbol}(")));
+    }
+
+    for symbol in ["mutableValue", "UnknownSymbol"] {
+        let input = serde_json::json!({
+            "pattern": symbol,
+            "path": source,
+            "output_mode": "content",
+        });
+        assert!(evaluate_hook_decision_with_env(&input.to_string(), &env).is_empty());
+    }
+}
+
+#[test]
+fn indexed_namesake_does_not_redirect_csharp_namespace_search() {
+    let (_tmp, root) = indexed_project_with_nodes(&["namespace", "HandleRequest"]);
+    let env = env_rooted_at(&root);
+    for (pattern, path, redirect) in [
+        ("namespace", "src/Example.cs", false),
+        ("namespace", "src/example.py", true),
+        ("HandleRequest", "src/Example.cs", true),
+    ] {
+        let args = serde_json::json!({
+            "pattern": pattern, "path": path, "output_mode": "content",
+        });
+        let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+        if redirect {
+            assert!(is_blocked(&result), "{pattern} in {path}: {result}");
+        } else {
+            assert!(result.is_empty(), "{pattern} in {path}: {result}");
+        }
+    }
 }
 
 #[test]

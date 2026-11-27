@@ -486,3 +486,86 @@ pub(super) fn capped_list(key: &str, mut items: Vec<Value>, limit: usize) -> Map
     m.insert(key.to_string(), Value::Array(items));
     m
 }
+
+/// Fits grouped graph results by limiting rows within each match first.
+pub(super) fn bounded_match_response(output: Value, key: &str, limit: usize) -> String {
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    if formatted.len() <= limit {
+        return formatted;
+    }
+    let Some(groups) = output.get("matches").and_then(Value::as_array) else {
+        return super::truncate_response_to(&formatted, limit);
+    };
+    let max_rows = groups
+        .iter()
+        .filter_map(|group| group.get(key)?.as_array().map(Vec::len))
+        .max()
+        .unwrap_or_default();
+    let mut low = 1;
+    let mut high = max_rows;
+    let mut best = None;
+    while low <= high {
+        let keep = low + (high - low) / 2;
+        let mut candidate = output.clone();
+        if let Some(groups) = candidate.get_mut("matches").and_then(Value::as_array_mut) {
+            for group in groups {
+                let Some(rows) = group.get_mut(key).and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                if rows.len() <= keep {
+                    continue;
+                }
+                rows.truncate(keep);
+                let references = rows
+                    .iter()
+                    .filter_map(|row| row.get("references")?.as_array())
+                    .map(Vec::len)
+                    .sum::<usize>();
+                group["count"] = json!(keep);
+                group["truncated"] = json!(true);
+                if let Some(total) = group["reference_total"].as_u64() {
+                    group["reference_count"] = json!(references);
+                    group["references_truncated"] = json!((references as u64) < total);
+                }
+            }
+        }
+        let rendered = candidate.to_string();
+        if rendered.len() <= limit {
+            best = Some(rendered);
+            low = keep + 1;
+        } else {
+            high = keep - 1;
+        }
+    }
+    best.unwrap_or_else(|| super::truncate_response_to(&formatted, limit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_match_response, capped_list, RESULT_LIMIT_DEFAULT};
+    use serde_json::{json, Value};
+
+    #[test]
+    fn response_budget_keeps_the_symbol_group_and_some_rows() {
+        for key in ["callers", "nodes"] {
+            let items: Vec<_> = (0..70)
+                .map(|index| json!({"node_id": index, "file": "directory/long source name.rs"}))
+                .collect();
+            let group = capped_list(key, items.clone(), RESULT_LIMIT_DEFAULT);
+            let output = json!({"symbol": "target", "match_count": 1, "matches": [group]});
+            let limit = 1024;
+            let rendered = bounded_match_response(output, key, limit);
+            assert!(rendered.len() <= limit);
+            let parsed: Value = serde_json::from_str(&rendered)
+                .unwrap_or_else(|error| panic!("invalid response: {error}"));
+            let group = &parsed["matches"][0];
+            let rows = group[key].as_array().map_or(&[][..], Vec::as_slice);
+            assert!(!rows.is_empty());
+            assert!(rows.len() < RESULT_LIMIT_DEFAULT);
+            assert_eq!(rows, &items[..rows.len()]);
+            assert_eq!(group["count"], json!(rows.len()));
+            assert_eq!(group["total"], json!(items.len()));
+            assert_eq!(group["truncated"], true);
+        }
+    }
+}

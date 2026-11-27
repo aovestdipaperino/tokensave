@@ -530,6 +530,8 @@ tokensave measures the tokens it saves on every MCP tool call. Each tool respons
 
 With the core toolset the server also lists `tokensave_more`. A call with an `area` (`analysis`, `edit`, `git`, `memory`, `navigate` or `all`) lists the tools of that area for the rest of the session, and the server sends `notifications/tools/list_changed` so the client fetches the list again. A session pays only for the areas it uses: the `git` area adds about 6 KB. A client that ignores `list_changed` keeps the core list. `tokensave install` grants `tokensave_more` along with every other tool, so it does not prompt; an install from before this release prompts once, until `tokensave reinstall` or the upgrade resync refreshes the permission list.
 
+To keep a whole area out of every list, for example when another MCP server already supplies those tools, set `disabled_tool_areas` in `~/.tokensave/config.toml`; see [MCP tools](docs/guide/MCP-TOOLS.md).
+
 ### Cost observability
 
 ```bash
@@ -728,7 +730,7 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
-Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
+Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only. Agents where tokensave was never installed are listed but not counted as issues; see [Troubleshooting](docs/guide/TROUBLESHOOTING.md#tokensave-doctor).
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
@@ -978,6 +980,8 @@ The AI agent doesn't see tokensave tools.
 1. Ensure the agent config includes the tokensave MCP server (run `tokensave doctor`)
 2. Restart the agent completely
 3. Check that `tokensave` is in your PATH: `which tokensave`
+
+Codex CLI drops MCP servers that start slower than its startup timeout; see [Codex CLI](docs/guide/TROUBLESHOOTING.md#codex-cli) for the checks `tokensave doctor --agent codex` runs.
 
 ### Missing symbols in search
 

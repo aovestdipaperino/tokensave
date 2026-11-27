@@ -9,6 +9,53 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Managed agent instructions explain the repository boundary for `tokensave_read`, and containment errors point to the host reader for authorized external access (Refs #1150).
+
+- `tokensave_context` accepts `query` as an alias for `task` and explains missing, invalid, or conflicting inputs (Refs #1149).
+
+- Symbol-based callers and impact responses retain matching symbols and a prefix of their results when the response size limit applies (Refs #1159).
+- Search hooks keep keyword-only C# searches such as `namespace` in native Grep, even when the same spelling names an indexed symbol (Refs #1146).
+
+- Claude Code native Grep proceeds under normal host permissions when the hook cannot establish MCP availability. An explicit strict setting retains redirects (Refs #1137).
+
+- **Swift call graph (Refs #N).** Instance calls keep their receiver, and a receiver whose type is known from an annotation, a constructor, a parameter or a stored property resolves through that type, its extensions and its superclasses and protocols. Calls on an untyped receiver with a standard-library collection, string or `Codable` method name (`items.append(x)`, `values.sorted()`) no longer bind to a project method of the same name, so they stop showing fake recursion; project verbs such as `save` or `update` still resolve by name. Calls through `!` (`if !isValid(x)`), reads of computed properties, function references (`.map(transform)`, `Button(action: handler)`) and `#selector(...)` now produce edges, and argument labels pick the right overload (`bind(name:value:)` vs `bind(value:)`), trailing closures included. In a Swift package (a `Package.swift` above `Sources/` and `Tests/`), a call only binds to another target that the file imports, and production code never binds to a test target. A bare call (`helper(x)`) binds only to a free function or to a member of the caller's own type, its enclosing types, extensions, superclasses and protocols, never to a same-named method of an unrelated type; `super.method()` binds to the superclass member instead of the calling method; an implicit member call (`.make(kind:)`) binds only to an initializer or static member that produces its own type; and a method on a framework receiver (`HStack(...).banner()`) reaches project protocol extensions such as `extension View`. Names bound by `case` patterns, `if let`/`guard let` and local functions shadow members, and `private` declarations are not bound from other files. Swift signatures now hold the whole declaration up to its body instead of the first line. Existing graphs keep their old Swift nodes and edges until the files are re-indexed (`tokensave sync --force`).
+
+- **Swift complexity metrics (Refs #N).** `for`-`in` loops are counted as loops, `? :` and `??` as branches, `&&`/`||` sequences add cognitive complexity, and Halstead operators and operands are counted, so Swift functions no longer report a Halstead volume of 0.
+
+- **Swift stored properties are fields (Refs #N).** Stored properties (with or without `willSet`/`didSet`) are indexed as `field` with their `///` doc comment; computed properties stay `property`. `tokensave_god_class` now counts them, and counts Kotlin/Scala `val`/`var` members, as fields.
+
+- `tokensave_doc_coverage` no longer reports headings and keys from documentation and configuration files (`.md`, `.markdown`, `.mdx`, `.rst`, `.txt`, `.json`, `.yaml`, `.yml`, `.toml`, `.canvas`) as undocumented public symbols (Refs #N).
+- A `tokensave.db` in the global state directory (`~/.tokensave/`) without the `config.json` that `init` writes no longer makes the home directory a project. Folders under the home directory that had no index of their own used to be served from that database, and a schema migration of it started a full re-index of the whole home tree, outside the guard from #396. Project discovery and the `serve` fallback to registered projects now skip it, and `serve` and `doctor` warn about the stray file instead of reporting an indexed home directory. A home directory initialized with `tokensave init` still works as before (Refs #1152).
+
+- `tokensave doctor` no longer counts agents that tokensave was never installed in. It checks an agent in full only when the agent is registered or its configuration has the tokensave MCP server, or when tokensave content was left behind (a partial install or incomplete removal, which also gets one warning naming the repair and removal commands). Other agents are listed in a new **Agent integrations** summary, separated into detected and not installed, without adding issues or warnings. `doctor --agent ID` for an agent without tokensave prints one warning (Refs #1116).
+
+- Grep hook denials suggest indexed definitions and preserve the original
+  text-search pattern, paths, and filters in the fallback guidance. The hook
+  no longer adds call syntax to bare identifiers such as constants (Refs #1115).
+
+- `tokensave doctor` reports each GitHub Copilot client separately (VS Code, VS Code Insiders, Copilot CLI, JetBrains): not detected, detected but not configured, configured, or partially configured. A Copilot CLI-only setup is no longer reported as a broken VS Code installation. VS Code instructions without a `User/mcp.json` registration are reported as a registration removed after installation, with the commands to restore it, and doctor lists VS Code profiles that need their own registration (Refs #1117).
+
+- MCP tool calls no longer fail with `branch context switch failed: sync lock: another sync is already in progress` right after a branch switch, while the `post-checkout` hook's background sync holds the lock. The server now waits up to 30 seconds for the other sync, and it does not sync the index again if that sync already refreshed it. The same wait applies when it refreshes the current branch after an extractor change. If the lock is still held after the wait, the call is answered from the checked-out branch's existing index, with a warning that names the branch and how long ago its index was last synced. Genuine lock errors are still reported, and a live lock is never removed (Refs #1123).
+
+- Codex sessions no longer lose the tokensave tools because the server needed more than Codex's 10-second MCP startup timeout, for example while building a first index or migrating the schema. `tokensave install --agent codex` now sets `startup_timeout_sec = 60` unless a timeout is already configured. `tokensave doctor --agent codex` checks `enabled`, that the command can be found, the startup timeout and `enabled_tools`/`disabled_tools`. From an indexed project it also starts the configured server once and compares the `initialize` and `tools/list` time with the timeout (Refs #587).
+
+- **Fewer wrong `calls`, `type_of` and `returns` edges from the name-based resolver fallbacks (Refs #1109).** Measured with `tokensave scip-compare` against rust-analyzer 1.88, edge precision rose from 0.654 to 0.856 on serde_json 1.0.154 and from 0.730 to 0.915 on toml_edit 0.22.27, and call-syntax recall rose from 0.569 to 0.585 and from 0.497 to 0.515. A call on another value (`self.map.clear()`) no longer binds to the method that makes it, so delegating wrappers stop showing fake recursion, and the `same-file-blocklist` strategy no longer binds such calls at all. A `::` path or an imported-module receiver (`crate::alpha::helper()`, TypeScript `alpha.helper()`) prefers candidates in the module or type it names, so `Box::new()` and `fmt::Result` no longer bind to a file's own `new` or `Result`. Rust type positions skip enum variants, `impl` blocks and associated types, and Rust type paths are now extracted whole, so `Self::Error`, `V::Value` and `std::io::Error` no longer bind to project types named `Error` or `Value`. A scored match that would pick a trait or interface declaration over its implementations stays unresolved. The `same-file-blocklist` and scored strategies now carry a lower confidence than the exact strategies. Existing graphs keep their old edges until the affected files are re-indexed (`tokensave sync --force`).
+
+- `tokensave discover` now counts Bash code searches such as `grep -n "const NAME" src/app.js` or `rg -n "fn parse" src` in a new **Bash grep** bucket. The command is classified at ingest with the Claude Code search hook's rules, and only the verdict is stored, never the command text. Searches it does not count are listed with the reason (`non_code_target`, `compound_command`, `mixed_with_other_tools` and others), in the text report and as `excluded_bash_searches` in `--json`. Bash turns ingested before this version stay uncounted (Refs #1118).
+
+- `tokensave tool --help` now shows subcommand help, just like
+  `tokensave help tool`. Use `tokensave tool <name> --help` for a specific
+  tool's parameters (Refs #1120).
+
+- Claude Code Bash text searches keep their original scope and output. Simple
+  symbol searches can include a scoped definition lookup suggestion, and an
+  inline `TOKENSAVE_DISABLE_GREP_HOOK=1` suppresses that suggestion for one
+  invocation (Refs #1110).
+
+- Claude Code Bash searches for simple JavaScript and TypeScript variable
+  declarations can suggest scoped indexed definitions while the original text
+  search runs with its usual permissions (Refs #1114).
+
 - Harden crates.io commit provenance resolution: packaged metadata is accepted
   only from its `git.sha1` field, and remains available when incomplete root
   Git metadata cannot resolve a valid commit (Refs #1098).
@@ -16,6 +63,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
 
 ### Changed
+
+- Clarified in [Supported Languages](docs/guide/LANGUAGES.md) that Lite, Medium,
+  and Full tiers are Cargo compilation feature groups rather than semantic
+  quality levels, documented the language extractor contribution and upgrade
+  workflow (including syntactic extraction vs. semantic resolution), listed
+  missing Full-tier languages (`GDScript`, `XAML`, `Obsidian Canvas`), and
+  recorded current F# extraction limitations (Refs #1126).
 
 - Auto-approve read-only MCP tools by default where the integration supports exact grants. Write-tool approvals require an exact-name opt-in, and existing policy can be reset explicitly (Refs #1080).
 ### Internal
@@ -30,6 +84,12 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
 ### Added
+
+- **Turn off whole tool areas (`disabled_tool_areas`, Refs #1161).** A list of area names (`analysis`, `edit`, `git`, `memory`, `navigate`) in `~/.tokensave/config.toml`, such as `disabled_tool_areas = ["memory"]`, keeps the tools of those areas out of `tools/list` for the core and the full toolset, out of `tokensave_more` and out of the `initialize` instructions. Use it when another MCP server already supplies those tools, so the agent sees one tool for each job. A call by name to such a tool does not run: the answer says in plain words that the tool is disabled. Tool results, tool descriptions, the server instructions and the schema resource do not send the agent to a tool of such an area. `tokensave doctor` shows each area that is off, with its tools. Empty by default: nothing changes without the setting.
+
+- `tokensave_god_class` accepts `kinds` (any of `class`, `struct`, `inner_class`, `object`) and `exclude_data_structs`, which leaves out structs without methods (Refs #N).
+
+- **Experimental, read-only SCIP comparison (Refs #1100).** Set `"enable_scip": true` in the project configuration to enable comparison. `tokensave scip-compare --index <file.scip>` reads a [SCIP](https://github.com/sourcegraph/scip) index from an external, compiler-backed indexer, such as `rust-analyzer scip`, and prints a JSON report. The report maps the index's definitions onto graph nodes and classifies each non-containment edge as confirmed, contradicted or unverifiable, broken down by resolver path and edge kind. SCIP references that the graph lacks are listed as a dry-run import plan with SCIP provenance. Nothing is written: the command runs no sync and no migration, and leaves the graph unchanged. It holds the project's sync lock while it runs and refuses to start while a sync is in progress, so it never compares against a partially committed graph. The index is decoded by a bounded, dependency-free protobuf reader. Malformed, oversized and incompatible indexes are refused. A document is skipped and counted when it is missing, unindexed, stale in either index, or has ranges that no longer match the source. When the SCIP index embeds document text, its hash must match the current source. An index whose `project_root` names another directory needs `--rebase-root`. Rust and TypeScript fixtures with ambiguous references and the evaluation are in `tests/fixtures/scip/` and `docs/scip/README.md`.
 
 - **Opt-in dependency advisory reachability (Refs #843).** `tokensave vuln-reachability` and the corresponding MCP tool combine cached OSV advisories with indexed imports and calls. See [Dependency advisory reachability](docs/guide/CLI-REFERENCE.md#dependency-advisory-reachability).
 

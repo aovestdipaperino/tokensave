@@ -435,11 +435,14 @@ async fn test_multiple_candidates_best_match_scoring() {
         resolved.target_node_id, same_file_node.id,
         "should prefer the same-file candidate"
     );
+    // Below the exact strategies (0.85+), above the 0.6 floor (#1109).
+    // Mirrors `SCORED_MATCH_CONFIDENCE` in src/resolution/constants.rs.
     assert!(
-        (resolved.confidence - 0.7).abs() < f64::EPSILON,
-        "multiple-match confidence should be 0.7, got {}",
+        (resolved.confidence - 0.65).abs() < f64::EPSILON,
+        "multiple-match confidence should be 0.65, got {}",
         resolved.confidence
     );
+    assert_eq!(resolved.resolved_by, "exact-match-scored");
 }
 
 #[tokio::test]

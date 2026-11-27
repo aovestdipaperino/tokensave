@@ -11,6 +11,7 @@ mod python_extractor;
 mod rust_extractor;
 mod scala_extractor;
 mod svelte_extractor;
+pub(crate) mod swift_constants;
 mod swift_extractor;
 mod typescript_extractor;
 

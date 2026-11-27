@@ -77,12 +77,14 @@ async fn swift_type_qualified_calls_resolve_across_files() {
     }
 }
 
-/// Catches: a call through an instance receiver (`worker.start()`) being
-/// bound by name alone to a same-named method in another file.
+/// Catches: a statically typed instance property (`let worker: Worker`)
+/// resolves via `Worker::start`, while an untyped/erased instance receiver
+/// (`anyWorker.start()`) is never bound by name alone to a same-named method in
+/// another file.
 #[tokio::test]
 async fn swift_instance_receiver_call_is_not_bound_by_name_alone() {
     let (_dir, cg) = setup().await;
     let nodes = cg.get_all_nodes().await.expect("nodes");
     let start = method(&nodes, "Worker", "start");
-    assert_eq!(caller_names(&cg, &nodes, start).await, Vec::<String>::new());
+    assert_eq!(caller_names(&cg, &nodes, start).await, vec!["run"]);
 }

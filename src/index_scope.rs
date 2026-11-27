@@ -32,7 +32,21 @@ pub fn scope_warnings(project_path: &Path, home: Option<&Path>) -> Vec<String> {
 
     // Checked whatever the working directory is: the whole problem with this
     // state is that nobody is standing in it when it does the damage.
-    let home_indexed = home.filter(|home| crate::tokensave::TokenSave::is_initialized(home));
+    let home_indexed =
+        home.filter(|home| crate::config::holds_project_index_from(home, Some(home)));
+    let home_stray_database = home
+        .filter(|home| home_indexed.is_none() && crate::tokensave::TokenSave::is_initialized(home));
+    if let Some(home) = home_stray_database {
+        let state_dir = crate::config::get_tokensave_dir(home);
+        out.push(format!(
+            "Ignoring a stray tokensave.db in the global state directory {} ({}): \
+             `init` did not create it, so the home directory is not served as a \
+             project (#1152). Remove {} unless you need it.",
+            state_dir.display(),
+            crate::display::format_bytes(index_size_bytes(home)),
+            state_dir.join("tokensave.db").display()
+        ));
+    }
     if let Some(home) = home_indexed {
         out.push(format!(
             "Home directory is initialized as a project: {}/.tokensave/ ({}) \
@@ -44,7 +58,11 @@ pub fn scope_warnings(project_path: &Path, home: Option<&Path>) -> Vec<String> {
         ));
     }
 
-    let is_home = home_indexed.is_some_and(|home| same_directory(home, project_path));
+    // A stray database is excluded too: its size is the stray warning's to
+    // report, not a second warning about the same directory.
+    let is_home = home_indexed
+        .or(home_stray_database)
+        .is_some_and(|home| same_directory(home, project_path));
     if !is_home && crate::tokensave::TokenSave::is_initialized(project_path) {
         let size = index_size_bytes(project_path);
         if size >= OVERSIZED_INDEX_BYTES {

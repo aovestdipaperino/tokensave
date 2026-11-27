@@ -38,14 +38,44 @@ use super::{response_limit, ToolResult};
 /// extension histogram (#561).
 pub struct SessionState {
     pub unscanned_shown: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// The tool areas that the user turned off with `disabled_tool_areas`.
+    /// The server lists no tool of these areas, and a tool result must not
+    /// send the agent to one.
+    disabled_tool_areas: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl SessionState {
     pub fn new() -> Self {
         Self {
             unscanned_shown: std::sync::Mutex::new(std::collections::HashSet::new()),
+            disabled_tool_areas: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
+
+    /// Sets the tool areas that the user turned off.
+    pub fn set_disabled_tool_areas(&self, areas: std::collections::BTreeSet<String>) {
+        if let Ok(mut disabled) = self.disabled_tool_areas.lock() {
+            *disabled = areas;
+        }
+    }
+
+    /// The tool areas that the user turned off.
+    pub fn disabled_tool_areas(&self) -> std::collections::BTreeSet<String> {
+        self.disabled_tool_areas
+            .lock()
+            .map(|areas| areas.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// [`reachable_tool_name`](crate::mcp::tools::reachable_tool_name) for this
+/// session: `None` when the user turned off the area of the tool. A call
+/// without a session, such as `tokensave tool`, has no area turned off.
+pub(crate) fn reachable_tool(session: Option<&SessionState>, name: &str) -> Option<String> {
+    let disabled = session
+        .map(SessionState::disabled_tool_areas)
+        .unwrap_or_default();
+    crate::mcp::tools::reachable_tool_name(name, &disabled)
 }
 
 impl Default for SessionState {
@@ -706,8 +736,8 @@ pub async fn handle_tool_call_with_session(
     match tool_name {
         "tokensave_search" => graph::handle_search(cg, args, scope_prefix, session).await,
         "tokensave_context" => graph::handle_context(cg, args, scope_prefix).await,
-        "tokensave_callers" => graph::handle_callers(cg, args, scope_prefix).await,
-        "tokensave_callees" => graph::handle_callees(cg, args, scope_prefix).await,
+        "tokensave_callers" => graph::handle_callers(cg, args, scope_prefix, session).await,
+        "tokensave_callees" => graph::handle_callees(cg, args, scope_prefix, session).await,
         "tokensave_impact" => graph::handle_impact(cg, args, scope_prefix).await,
         "tokensave_node" => graph::handle_node(cg, args).await,
         "tokensave_status" => {
@@ -786,7 +816,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_doc" => info::handle_doc(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
-        "tokensave_entities" => info::handle_outline(cg, args).await,
+        "tokensave_entities" => info::handle_outline(cg, args, session).await,
         "tokensave_config" => info::handle_config(cg, &args),
         "tokensave_signature_search" => info::handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_implementations" => graph::handle_implementations(cg, args, scope_prefix).await,

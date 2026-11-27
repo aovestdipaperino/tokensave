@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::extraction::{LanguageExtractor, TypeScriptExtractor};
+
 mod constants;
 
 use constants::{CODE_CONTEXT_WORDS, CODE_RESEARCH_PHRASES, GENERIC_EXPLORATION_PHRASES};
@@ -217,7 +219,7 @@ pub fn hook_pre_tool_use_codex() {
     let decision = if raw.trim().is_empty() {
         evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
     } else {
-        evaluate_claude_pre_tool_use(&raw)
+        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false, false)
     };
     let decision_json =
         serde_json::from_str::<serde_json::Value>(&decision).unwrap_or(serde_json::Value::Null);
@@ -260,7 +262,9 @@ pub fn hook_pre_tool_use_codex() {
 /// [`evaluate_hook_decision`]. If the payload isn't the expected wrapper shape,
 /// falls back to treating `raw` as a flat tool-input object.
 pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
-    evaluate_claude_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+    let strict_grep =
+        std::env::var(constants::CLAUDE_STRICT_GREP_ENV).is_ok_and(|value| value == "1");
+    evaluate_pre_tool_use_event(raw, &HookEnv::from_runtime(), true, strict_grep)
 }
 
 /// [`evaluate_claude_pre_tool_use`] with an explicit environment snapshot.
@@ -268,14 +272,70 @@ pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
 /// The snapshot is a base: when the event reports its own `cwd`, the project is
 /// re-discovered from there.
 pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
-    let event = serde_json::from_str::<serde_json::Value>(raw).ok();
-    let env = event
-        .as_ref()
-        .map_or_else(|| env.clone(), |event| env.for_event(event));
-    let tool_input = event
-        .and_then(|v| v.get("tool_input").cloned())
-        .map_or_else(|| raw.to_string(), |ti| ti.to_string());
-    evaluate_hook_decision_with_env(&tool_input, &env)
+    evaluate_pre_tool_use_event(raw, env, true, false)
+}
+
+fn evaluate_pre_tool_use_event(
+    raw: &str,
+    env: &HookEnv,
+    advise_on_bash: bool,
+    strict_grep: bool,
+) -> String {
+    let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        return String::new();
+    };
+    let env = env.for_event(&event);
+    let tool_input = event.get("tool_input").unwrap_or(&event);
+    if advise_on_bash && event.get("tool_name").and_then(Value::as_str) == Some("Bash") {
+        let Some(command) = tool_input.get("command").and_then(Value::as_str) else {
+            return String::new();
+        };
+        if let Some(reason) = evaluate_find_command(command, &env) {
+            return build_block_message(&reason);
+        }
+        let advice = bash_search_advice(command, &env);
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "hook",
+            "grep_decision",
+            || {
+                serde_json::json!({
+                    "tool": "Bash",
+                    "decision": if advice.is_some() { "advise" } else { "allow" },
+                })
+            },
+        );
+        return advice.unwrap_or_default();
+    }
+    if advise_on_bash
+        && !strict_grep
+        && event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && event.get("tool_name").and_then(Value::as_str) == Some("Grep")
+    {
+        // Claude's event does not expose the current session's MCP health.
+        // A local index can support a suggestion, but cannot justify denial.
+        let eligible = evaluate_grep_tool_input_inner(tool_input, &env).is_some();
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "hook",
+            "grep_decision",
+            || {
+                serde_json::json!({
+                    "tool": "Grep",
+                    "decision": if eligible { "advise" } else { "allow" },
+                    "mcp_availability": "unknown",
+                })
+            },
+        );
+        return if eligible {
+            build_search_advice(
+                "Use native Grep results for text matches. For indexed definitions, use tokensave_search when the session has it available.",
+            )
+        } else {
+            String::new()
+        };
+    }
+    evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
 
 /// Pure decision logic for the `PreToolUse` hook, using the real process
@@ -403,15 +463,16 @@ fn build_block_message(reason: &str) -> String {
 /// Fails closed: an index that cannot be opened or queried keeps the
 /// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
 fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
-    let Some(root) = env.project_root.as_deref() else {
-        log_index_probe("no_project_root_fail_closed");
-        return true;
-    };
+    probe_indexed_symbol(env, symbol).unwrap_or(true)
+}
+
+/// A failed probe cannot establish that a symbol lookup is useful.
+fn probe_indexed_symbol(env: &HookEnv, symbol: &str) -> Option<bool> {
+    let root = env.project_root.as_deref()?;
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
-        log_index_probe("wal_refused_fail_closed");
-        return true;
+        log_index_probe("wal_refused");
+        return None;
     }
     let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
     let name = symbol.to_lowercase();
@@ -440,9 +501,9 @@ fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     log_index_probe(match ran {
         Some(true) => "symbol_found",
         Some(false) => "symbol_absent",
-        None => "index_unavailable_fail_closed",
+        None => "index_unavailable",
     });
-    ran.unwrap_or(true)
+    ran
 }
 
 fn log_index_probe(outcome: &'static str) {
@@ -463,10 +524,52 @@ fn grep_check(tool: &'static str, check: &'static str, passed: bool) {
     );
 }
 
+/// Scope hints narrow a text search without inspecting repository contents.
+fn keyword_search(symbol: &str, path: &str, globs: &[&str], ty: &str) -> bool {
+    if !constants::CSHARP_SEARCH_KEYWORDS.contains(&symbol) {
+        return false;
+    }
+    let is_csharp = |value: &str| {
+        constants::CSHARP_SEARCH_TYPES
+            .iter()
+            .any(|kind| value.eq_ignore_ascii_case(kind))
+    };
+    if !ty.is_empty() {
+        return is_csharp(ty);
+    }
+    let file_extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            is_csharp(ext)
+                || CODE_EXTENSIONS
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+        });
+    if let Some(ext) = file_extension {
+        return is_csharp(ext);
+    }
+    let mut known_globs = 0;
+    for extensions in globs.iter().filter_map(|glob| glob_extensions(glob)) {
+        if extensions.iter().any(|ext| is_csharp(ext)) {
+            return true;
+        }
+        known_globs += 1;
+    }
+    if known_globs > 0 && known_globs == globs.len() {
+        return false;
+    }
+
+    // An unscoped namespace search may include C# alongside another language
+    // with an indexed symbol of that name. Keep the cross-language text match.
+    symbol == constants::CSHARP_NAMESPACE_KEYWORD
+}
+
 fn check_grep_pattern<'a>(
     tool: &'static str,
     pattern: &'a str,
     env: &HookEnv,
+    is_keyword: impl FnOnce(&str) -> bool,
 ) -> Option<SymbolMatch<'a>> {
     let found = classify_symbol_pattern(pattern);
     crate::debug_log::event(
@@ -484,6 +587,11 @@ fn check_grep_pattern<'a>(
         },
     );
     let found = found?;
+    let keyword = is_keyword(found.symbol);
+    grep_check(tool, "non_keyword_pattern", !keyword);
+    if keyword {
+        return None;
+    }
     let indexed = is_symbol_indexed(env, found.symbol);
     grep_check(tool, "symbol_indexed", indexed);
     indexed.then_some(found)
@@ -544,7 +652,9 @@ fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<Strin
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern("Grep", pattern, env)?;
+    let found = check_grep_pattern("Grep", pattern, env, |symbol| {
+        keyword_search(symbol, path, &[glob], ty)
+    })?;
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -744,6 +854,114 @@ fn split_top_level_segments(command: &str) -> Option<Vec<Vec<&str>>> {
     }
 }
 
+/// Claude can attach a suggestion without replacing the search or granting
+/// permission. Its hook input cannot establish MCP availability or freshness.
+fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
+    if !env.in_tokensave_project || env.disable_grep_hook {
+        return None;
+    }
+    let stripped = strip_command_prefixes(command.trim());
+    if stripped.disables_hook
+        || stripped.cd_target.is_some()
+        || command.contains([
+            '\n', '$', '`', '|', ';', '&', '<', '>', '#', '*', '?', '[', '{', '~',
+        ])
+    {
+        return None;
+    }
+
+    // Only suggest a definition lookup for simple scoped searches. The
+    // general grep parser accepts options that can change what gets matched.
+    let tokens = shell_split(stripped.rest);
+    let (tool, args) = tokens.split_first()?;
+    if !constants::BASH_ADVISORY_GREP_TOOLS.contains(&tool.as_str()) {
+        return None;
+    }
+    let first_positional = args.iter().take_while(|arg| arg.starts_with('-')).count();
+    if !args[..first_positional].iter().all(|flag| {
+        flag.strip_prefix('-').is_some_and(|flags| {
+            !flags.is_empty()
+                && flags
+                    .chars()
+                    .all(|flag| constants::BASH_ADVISORY_GREP_FLAGS.contains(flag))
+        })
+    }) {
+        return None;
+    }
+    let [pattern, target] = &args[first_positional..] else {
+        return None;
+    };
+    if pattern.len() > MAX_PATTERN_LEN
+        || target.starts_with('-')
+        || !target_looks_like_code(target, &[], "", env)
+    {
+        return None;
+    }
+    let root = env.project_root.as_deref()?.canonicalize().ok()?;
+    let target = env.base()?.join(target).canonicalize().ok()?;
+    let relative = target.strip_prefix(&root).ok()?;
+    let symbol = bash_advisory_symbol(pattern, &target)?;
+    let mut scope = relative.to_str()?.to_owned();
+    if target.is_dir() && !scope.is_empty() {
+        scope.push(std::path::MAIN_SEPARATOR);
+    }
+    if !probe_indexed_symbol(env, symbol)? {
+        return None;
+    }
+    let mut args = serde_json::json!({ "query": symbol, "graph_root": root });
+    if !scope.is_empty() {
+        args["path_include"] = serde_json::json!([scope]);
+    }
+    let advice = format!(
+        "For indexed definitions in this search scope, use tokensave_search {args} when \
+         available. Use the Bash results for exact text matches or when the index is stale \
+         or unavailable."
+    );
+    Some(build_search_advice(&advice))
+}
+
+fn build_search_advice(advice: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": advice,
+        }
+    })
+    .to_string()
+}
+
+fn bash_advisory_symbol<'a>(pattern: &'a str, target: &Path) -> Option<&'a str> {
+    if let Some(found) = classify_symbol_pattern(pattern) {
+        if keyword_search(found.symbol, &target.to_string_lossy(), &[], "") {
+            return None;
+        }
+        let simple_pattern = match found.shape {
+            PatternShape::BareSymbol => pattern == found.symbol,
+            PatternShape::WordBoundary => true,
+            PatternShape::Definition => pattern.split_once(' ').is_some_and(|(keyword, name)| {
+                DEFINITION_KEYWORDS.contains(&keyword) && name == found.symbol
+            }),
+        };
+        return simple_pattern.then_some(found.symbol);
+    }
+
+    // Interpret variable prefixes only for a concrete JavaScript or TypeScript
+    // file. A directory or another language can contain those words as prose.
+    let (keyword, name) = pattern.split_once(' ')?;
+    if !constants::JS_VARIABLE_DECLARATION_KEYWORDS.contains(&keyword)
+        || !is_pure_identifier(name)
+        || name.contains(':')
+    {
+        return None;
+    }
+    let extension = target.extension()?.to_str()?;
+    let supported = TypeScriptExtractor
+        .extensions()
+        .iter()
+        .any(|ext| ext.eq_ignore_ascii_case(extension));
+    (supported && target.is_file()).then_some(name)
+}
+
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     let decision = evaluate_bash_command_inner(command, env);
     log_grep_decision("Bash", decision.is_some());
@@ -870,7 +1088,15 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern(inv.tool, &inv.pattern, env)?;
+    let found = check_grep_pattern(inv.tool, &inv.pattern, env, |symbol| {
+        let ty = inv.ty.as_deref().unwrap_or("");
+        keyword_search(symbol, target.as_ref(), &globs, ty)
+            || inv
+                .targets
+                .iter()
+                .skip(1)
+                .any(|target| keyword_search(symbol, target, &globs, ty))
+    })?;
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
@@ -950,6 +1176,234 @@ fn evaluate_find_command(command: &str, env: &HookEnv) -> Option<String> {
     Some(files_redirect_message("Bash find", &inv.globs.join(", ")))
 }
 
+/// Offline verdict on a recorded `Bash` command, for `tokensave discover`
+/// (#1118).
+///
+/// The hook decides with the live filesystem and index; a transcript is read
+/// later, possibly on another machine, so this verdict uses only the command
+/// text: the same grep parser and symbol-pattern rules as the hook, and the
+/// name-based code-target rules (a default [`HookEnv`] never touches disk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashSearchVerdict {
+    /// Not a `grep`/`rg`/`ag`/`git grep` search at all.
+    NotSearch,
+    /// A code search for one symbol that a graph query could have answered.
+    Replaceable,
+    /// A search the analyzer deliberately does not count, and why.
+    Excluded(BashSearchExclusion),
+}
+
+/// Why a recognized Bash search is not counted as replaceable (#1118).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BashSearchExclusion {
+    /// `TOKENSAVE_DISABLE_GREP_HOOK` was set inline: a deliberate text search.
+    ExplicitOptOut,
+    /// Sequenced with other work, or piped into something that is not a
+    /// read-only filter.
+    CompoundCommand,
+    /// Substitution, redirects or other shell syntax the parser does not model.
+    UnsupportedShellSyntax,
+    /// `git grep` with an argument that may name a revision.
+    RevisionSearch,
+    /// The pattern is longer than a symbol lookup plausibly is.
+    PatternTooLong,
+    /// The pattern is a regex or prose, not a single symbol.
+    NonSymbolPattern,
+    /// `const`/`let`/`var NAME` outside a concrete JavaScript or TypeScript
+    /// file, where those words may be prose or another language.
+    DeclarationOutsideJsTs,
+    /// A search path, glob or type filter that is not indexed code.
+    NonCodeTarget,
+}
+
+impl BashSearchExclusion {
+    /// Every exclusion, in report order.
+    pub const ALL: [Self; 8] = [
+        Self::ExplicitOptOut,
+        Self::CompoundCommand,
+        Self::UnsupportedShellSyntax,
+        Self::RevisionSearch,
+        Self::PatternTooLong,
+        Self::NonSymbolPattern,
+        Self::DeclarationOutsideJsTs,
+        Self::NonCodeTarget,
+    ];
+
+    /// Stable snake-case code, stored in the accounting database and shown in
+    /// `discover --json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitOptOut => "explicit_opt_out",
+            Self::CompoundCommand => "compound_command",
+            Self::UnsupportedShellSyntax => "unsupported_shell_syntax",
+            Self::RevisionSearch => "revision_search",
+            Self::PatternTooLong => "pattern_too_long",
+            Self::NonSymbolPattern => "non_symbol_pattern",
+            Self::DeclarationOutsideJsTs => "declaration_outside_js_ts",
+            Self::NonCodeTarget => "non_code_target",
+        }
+    }
+
+    /// Parse a code written by [`Self::as_str`].
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.as_str() == code)
+    }
+
+    /// One-line human explanation for the `discover` report.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ExplicitOptOut => "explicit TOKENSAVE_DISABLE_GREP_HOOK opt-out",
+            Self::CompoundCommand => "chained with other commands",
+            Self::UnsupportedShellSyntax => "shell syntax the classifier does not model",
+            Self::RevisionSearch => "git grep over a possible revision",
+            Self::PatternTooLong => "pattern too long for a symbol lookup",
+            Self::NonSymbolPattern => "regex or text pattern, not one symbol",
+            Self::DeclarationOutsideJsTs => {
+                "const/let/var pattern outside a JavaScript or TypeScript file"
+            }
+            Self::NonCodeTarget => "searches files that are not indexed code",
+        }
+    }
+}
+
+/// Is `segment` (after leading noise) a search tool invocation?
+fn is_search_head(segment: &str) -> bool {
+    let rest = strip_command_prefixes(segment.trim()).rest;
+    strip_git_grep(rest).is_some()
+        || ["grep ", "rg ", "ag "]
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+}
+
+/// Classify a recorded Bash command for `tokensave discover` (#1118).
+///
+/// Pure function of the command text; see [`BashSearchVerdict`].
+pub fn classify_bash_search(command: &str) -> BashSearchVerdict {
+    let command = command.trim();
+    // The whole command first: this is the only path that models a leading
+    // `cd`, exactly as in `evaluate_bash_command_inner`.
+    let whole = classify_bash_search_segment(command);
+    if whole != BashSearchVerdict::NotSearch
+        && whole != BashSearchVerdict::Excluded(BashSearchExclusion::UnsupportedShellSyntax)
+    {
+        return whole;
+    }
+    let Some(segments) = split_top_level_segments(command) else {
+        return whole;
+    };
+    // One pipeline whose later stages only filter is still just the search.
+    if let [stages] = segments.as_slice() {
+        if let Some((first, filters)) = stages.split_first() {
+            if filters.iter().all(|stage| is_read_only_filter(stage)) {
+                return classify_bash_search_segment(first);
+            }
+        }
+    }
+    let has_search = segments
+        .iter()
+        .any(|stages| stages.first().is_some_and(|first| is_search_head(first)));
+    if has_search {
+        BashSearchVerdict::Excluded(BashSearchExclusion::CompoundCommand)
+    } else {
+        BashSearchVerdict::NotSearch
+    }
+}
+
+/// [`classify_bash_search`] for one command with no top-level sequencing.
+fn classify_bash_search_segment(command: &str) -> BashSearchVerdict {
+    use BashSearchExclusion as Why;
+    let stripped = strip_command_prefixes(command);
+    if !is_search_head(stripped.rest) {
+        return BashSearchVerdict::NotSearch;
+    }
+    if stripped.disables_hook {
+        return BashSearchVerdict::Excluded(Why::ExplicitOptOut);
+    }
+    let Some(mut inv) = extract_grep_invocation(command) else {
+        return BashSearchVerdict::Excluded(Why::UnsupportedShellSyntax);
+    };
+    if inv.pattern.is_empty() {
+        return BashSearchVerdict::Excluded(Why::NonSymbolPattern);
+    }
+    if inv.pattern.len() > MAX_PATTERN_LEN {
+        return BashSearchVerdict::Excluded(Why::PatternTooLong);
+    }
+    // Offline there is no working tree to ask whether a `git grep` argument
+    // is a path or a revision, so only arguments that name code count.
+    let env = HookEnv::default();
+    if !inv.git_trees.is_empty() {
+        if !inv
+            .git_trees
+            .iter()
+            .all(|tree| target_looks_like_code(tree, &[], "", &env))
+        {
+            return BashSearchVerdict::Excluded(Why::RevisionSearch);
+        }
+        let trees = std::mem::take(&mut inv.git_trees);
+        inv.targets.splice(0..0, trees);
+    }
+    // After `cd DIR &&`, a search of `.` searches DIR.
+    let cd_target = stripped
+        .cd_target
+        .map(|cd| unescape_shell_backslashes(unquote(cd)).into_owned());
+    let mut targets: Vec<String> = inv
+        .targets
+        .iter()
+        // `2>/dev/null` is the one redirect the parser accepts; the splitter
+        // stops at `>` and leaves its `2` behind, which is not a search path.
+        .filter(|t| !(t.as_str() == "2" && command.contains("2>")))
+        .map(|t| match &cd_target {
+            Some(cd) if t.is_empty() || t == "." || t == "./" => cd.clone(),
+            Some(cd) => Path::new(cd).join(t).to_string_lossy().into_owned(),
+            None => t.clone(),
+        })
+        .collect();
+    if targets.is_empty() {
+        targets.push(cd_target.unwrap_or_default());
+    }
+    let globs: Vec<&str> = inv.globs.iter().map(String::as_str).collect();
+    let ty = inv.ty.as_deref().unwrap_or("");
+    if !targets
+        .iter()
+        .all(|target| target_looks_like_code(target, &globs, ty, &env))
+    {
+        return BashSearchVerdict::Excluded(Why::NonCodeTarget);
+    }
+    if classify_symbol_pattern(&inv.pattern).is_some_and(|found| {
+        targets
+            .iter()
+            .all(|target| !keyword_search(found.symbol, target, &globs, ty))
+    }) {
+        return BashSearchVerdict::Replaceable;
+    }
+    // `const NAME`, `let NAME`, `var NAME`: the advisory path accepts these
+    // only for a concrete JavaScript or TypeScript file, so does this.
+    if let Some((keyword, name)) = inv.pattern.split_once(' ') {
+        if constants::JS_VARIABLE_DECLARATION_KEYWORDS.contains(&keyword)
+            && is_pure_identifier(name)
+            && !name.contains(':')
+        {
+            let js_ts_file = |target: &String| {
+                Path::new(target)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        TypeScriptExtractor
+                            .extensions()
+                            .iter()
+                            .any(|known| known.eq_ignore_ascii_case(ext))
+                    })
+            };
+            return if targets.iter().all(js_ts_file) {
+                BashSearchVerdict::Replaceable
+            } else {
+                BashSearchVerdict::Excluded(Why::DeclarationOutsideJsTs)
+            };
+        }
+    }
+    BashSearchVerdict::Excluded(Why::NonSymbolPattern)
+}
+
 /// Inspect a `Glob` tool call. Returns `Some(reason)` to redirect.
 fn evaluate_glob_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
     if !env.in_tokensave_project || env.disable_grep_hook {
@@ -1003,47 +1457,17 @@ struct SymbolMatch<'a> {
     symbol: &'a str,
 }
 
-/// One `tokensave_search` call spelled the way an agent would type it, so the
-/// denial can be copied verbatim (#654). `serde_json` quotes the query, which
-/// keeps the call valid JSON whatever the symbol contains.
-fn search_call(query: &str, literal: bool) -> String {
-    let query = Value::String(query.to_string());
-    if literal {
-        format!("tokensave_search {{\"query\": {query}, \"literal\": true}}")
-    } else {
-        format!("tokensave_search {{\"query\": {query}}}")
-    }
-}
-
-/// The replacement calls for one symbol: where it is defined, where it is
-/// called as a method, and every call site. Uses go to a literal search, never
-/// to `tokensave_callers_for`, which takes node ids and is not a core tool
-/// (#649).
-fn symbol_suggestions(symbol: &str) -> String {
-    // A qualified name (`Type::method`) is called as `.method(` on a value.
-    let short = symbol.rsplit("::").next().unwrap_or(symbol);
-    format!(
-        "{} for the definition, {} for method-call uses, or {} for every call",
-        search_call(symbol, false),
-        search_call(&format!(".{short}("), true),
-        search_call(&format!("{symbol}("), true),
-    )
-}
-
 fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch<'_>) -> String {
-    let suggestion = if found.shape == PatternShape::Definition {
-        format!(
-            "{} to find the definition",
-            search_call(found.symbol, false)
-        )
-    } else {
-        symbol_suggestions(found.symbol)
-    };
+    let definitions = serde_json::json!({ "query": found.symbol });
     format!(
-        "STOP: This {tool_label} targets a code file in a tokensave-indexed project and the \
-         pattern `{pattern}` looks like a symbol search. Use {suggestion}. Symbol-indexed \
-         lookups are faster and more accurate than text grep. To override for this one call, \
-         set TOKENSAVE_DISABLE_GREP_HOOK=1 in the shell."
+        "STOP: This {tool_label} targets indexed code and the pattern `{pattern}` looks \
+         like a symbol search. Use tokensave_search {definitions} for indexed definitions. \
+         For text matches, including references and comments, keep the original pattern, \
+         paths, and filters. For a supported shell search, run it as `tokensave grep` \
+         followed by the original grep, rg, or git grep command to add index facts. \
+         To run the original search directly, prefix a Bash command with \
+         TOKENSAVE_DISABLE_GREP_HOOK=1, or set it in the agent's launch environment \
+         for the Grep tool."
     )
 }
 
@@ -1147,7 +1571,7 @@ fn classify_definition_pattern(pattern: &str) -> Option<(PatternShape, &str)> {
     }
     // A declaration keyword pins the intent to the definition. A bare paren
     // does not — `foo(` is as often a hunt for call sites — so it gets the
-    // same both-ways suggestion a bare identifier gets.
+    // same definition and text-search guidance as a bare identifier.
     if had_keyword {
         Some((PatternShape::Definition, rest))
     } else {
@@ -1527,6 +1951,14 @@ fn expand_home_prefix(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn classify_glob_target(glob: &str) -> Option<bool> {
+    Some(
+        glob_extensions(glob)?
+            .iter()
+            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str())),
+    )
+}
+
+fn glob_extensions(glob: &str) -> Option<Vec<String>> {
     let trimmed = glob.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() {
         return None;
@@ -1558,11 +1990,7 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
         vec![ext]
     };
 
-    (!extensions.is_empty()).then(|| {
-        extensions
-            .iter()
-            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str()))
-    })
+    (!extensions.is_empty()).then_some(extensions)
 }
 
 #[derive(Debug, Default)]
@@ -2565,6 +2993,99 @@ async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
             "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
             stats.cost_usd
         );
+    }
+}
+
+#[cfg(test)]
+mod grep_keyword_tests {
+    use super::{evaluate_hook_decision_with_env, HookEnv};
+
+    #[test]
+    fn keyword_only_csharp_searches_stay_native() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path, glob, ty) in [
+            ("namespace", "src/Example.cs", "", ""),
+            (r"namespace", "src", "*.{cs,rs}", ""),
+            ("namespace(", "src", "", ""),
+            ("return", "src", "", "csharp"),
+            ("record", "src/Example.CS", "", ""),
+            ("@namespace", "src/Example.cs", "", ""),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "glob": glob, "type": ty,
+                "output_mode": "content",
+            });
+            assert!(
+                evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty(),
+                "{pattern} in {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn non_keyword_symbols_still_redirect_in_their_language() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path) in [
+            ("HandleRequest", "src/Example.cs"),
+            ("namespace", "src/example.py"),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "output_mode": "content",
+            });
+            let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+            assert!(result.contains("tokensave_search"), "{pattern} in {path}");
+        }
+    }
+
+    #[test]
+    fn shell_grep_preserves_keyword_searches_in_mixed_files() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let args = serde_json::json!({
+            "command": "rg -n namespace src/example.py src/Example.cs",
+        });
+        assert!(evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod claude_grep_tests {
+    use super::{evaluate_pre_tool_use_event, HookEnv};
+
+    #[test]
+    fn claude_grep_requires_opt_in_to_deny_when_mcp_health_is_unknown() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let event = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "handle_request", "path": "src/lib.rs", "output_mode": "content"},
+        });
+        let advice = evaluate_pre_tool_use_event(&event.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&advice).unwrap_or_default();
+        assert!(output["hookSpecificOutput"]["additionalContext"].is_string());
+        assert!(output["hookSpecificOutput"]
+            .get("permissionDecision")
+            .is_none());
+        let strict = evaluate_pre_tool_use_event(&event.to_string(), &env, true, true);
+        let output: serde_json::Value = serde_json::from_str(&strict).unwrap_or_default();
+        assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+
+        let mut other_host = event;
+        other_host["hook_event_name"] = serde_json::json!("preToolUse");
+        let decision = evaluate_pre_tool_use_event(&other_host.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&decision).unwrap_or_default();
+        assert_eq!(output["permission"], "deny");
     }
 }
 

@@ -310,11 +310,15 @@ mapped files and `process::exit`. The checks are listed in
 
 ## Adding a New Language Extractor
 
+See [Adding or upgrading a language extractor](docs/guide/LANGUAGES.md#adding-or-upgrading-a-language-extractor)
+for the full walkthrough (including grammar loading paths, graph mapping, and
+the boundary between syntactic extraction and semantic resolution). In short:
+
 1. Add a tree-sitter grammar dependency (or vendor it under `vendor/` and add it to `VENDORED_GRAMMARS` in `build/constants.rs`).
-2. Create `src/extraction/{lang}_extractor.rs` implementing the `Extractor` trait.
-3. Register it in the `LanguageRegistry` with a feature flag (e.g., `lang-{name}`).
-4. Add a fixture file `tests/fixtures/sample.{ext}` and a test file `tests/{lang}_extraction_test.rs`, then declare it as `mod {lang}_extraction_test;` in `tests/integration.rs` (test files are not auto-discovered; see [Test layout](#test-layout)).
-5. Update the feature flag tables in `Cargo.toml` and this document.
+2. Create `src/extraction/{lang}_extractor.rs` implementing the `LanguageExtractor` trait.
+3. Register it in `LanguageRegistry` with a feature flag (e.g., `lang-{name}`).
+4. Add a fixture file `tests/fixtures/sample.{ext}` (if needed) and a test file `tests/{lang}_extraction_test.rs`, then declare it as `mod {lang}_extraction_test;` in `tests/integration.rs` (test files are not auto-discovered; see [Test layout](#test-layout)).
+5. Update the feature flag tables in `Cargo.toml` and [Supported Languages](docs/guide/LANGUAGES.md).
 
 ## Running Specific Tests
 

@@ -15,7 +15,7 @@
 //! - `JetBrains` plugin's `~/.config/github-copilot/intellij/mcp.json` under
 //!   `servers.tokensave` (only when the plugin's config dir exists)
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -205,15 +205,36 @@ impl AgentIntegration for CopilotIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
-        doctor_check_vscode_settings(dc, &super::vscode_data_dir(&ctx.home), "VS Code");
-        doctor_check_vscode_settings(
-            dc,
-            &super::vscode_insiders_data_dir(&ctx.home),
-            "VS Code Insiders",
-        );
-        doctor_check_cli_settings(dc, &ctx.home);
-        doctor_check_jetbrains_settings(dc, &ctx.home);
-        doctor_check_prompts(dc, &ctx.home);
+        let mut configured = 0usize;
+        for surface in copilot_surfaces(&ctx.home) {
+            match surface.state() {
+                SurfaceState::NotDetected => {
+                    dc.info(&format!("{}: not detected, skipped", surface.label));
+                }
+                SurfaceState::NotConfigured => dc.info(&format!(
+                    "{}: detected, tokensave not configured there (not checked) — \
+                     `tokensave install --agent copilot` adds it",
+                    surface.label
+                )),
+                state @ (SurfaceState::Configured | SurfaceState::Partial { .. }) => {
+                    configured += 1;
+                    surface.check_registration(dc);
+                    check_shared_rules_block(dc, &surface.instructions, "copilot");
+                    if let SurfaceState::Partial { registered } = state {
+                        report_partial_surface(dc, &surface, registered);
+                    }
+                    if surface.kind == SurfaceKind::VsCode {
+                        report_vscode_profiles(dc, &surface.root);
+                    }
+                }
+            }
+        }
+        if configured == 0 {
+            dc.fail(
+                "tokensave is not configured for any GitHub Copilot surface (VS Code, \
+                 VS Code Insiders, Copilot CLI, JetBrains) — run `tokensave install --agent copilot`",
+            );
+        }
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -776,23 +797,184 @@ fn doctor_check_cli_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check all Copilot instruction files for the up-to-date tokensave rules block.
-fn doctor_check_prompts(dc: &mut DoctorCounters, home: &Path) {
-    let vscode = super::vscode_data_dir(home)
-        .join("User")
-        .join("prompts")
-        .join("copilot-instructions.md");
-    check_shared_rules_block(dc, &vscode, "copilot");
+// ---------------------------------------------------------------------------
+// Per-surface status (#1117)
+// ---------------------------------------------------------------------------
 
-    let insiders = super::vscode_insiders_data_dir(home)
-        .join("User")
-        .join("prompts")
-        .join("copilot-instructions.md");
-    check_shared_rules_block(dc, &insiders, "copilot");
+/// Which Copilot client a surface belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceKind {
+    VsCode,
+    Cli,
+    JetBrains,
+}
 
-    let cli = super::copilot_cli_dir(home).join("copilot-instructions.md");
-    check_shared_rules_block(dc, &cli, "copilot");
+/// One place GitHub Copilot reads tokensave from.
+struct CopilotSurface {
+    label: &'static str,
+    kind: SurfaceKind,
+    /// Directory whose presence means this client is on the machine (VS Code's
+    /// `User` directory, `~/.copilot`, the `JetBrains` plugin's config root).
+    root: PathBuf,
+    /// VS Code data directory, for the registration check of a VS Code surface.
+    data_dir: PathBuf,
+    instructions: PathBuf,
+    home_dir: PathBuf,
+}
 
-    let jetbrains = super::copilot_jetbrains_dir(home).join("global-copilot-instructions.md");
-    check_shared_rules_block(dc, &jetbrains, "copilot");
+/// What `doctor` found for one surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceState {
+    /// The client is not on this machine.
+    NotDetected,
+    /// The client is here, but neither tokensave's MCP entry nor its
+    /// instructions are: a CLI-only install, say. Not applicable, not counted.
+    NotConfigured,
+    /// MCP entry and instructions both present.
+    Configured,
+    /// Only one of the two is present: an interrupted install, or a
+    /// registration removed afterwards. `registered` says which one is there.
+    Partial { registered: bool },
+}
+
+impl CopilotSurface {
+    fn mcp_registered(&self) -> bool {
+        let home = self.home_dir.as_path();
+        let server_in = |path: &Path, pointer: &str| {
+            path.exists() && load_jsonc_file(path).pointer(pointer).is_some()
+        };
+        match self.kind {
+            SurfaceKind::VsCode => {
+                let user = self.data_dir.join("User");
+                server_in(&user.join("mcp.json"), "/servers/tokensave")
+                    || server_in(&user.join("settings.json"), "/mcp/servers/tokensave")
+            }
+            SurfaceKind::Cli => server_in(
+                &super::copilot_cli_dir(home).join("mcp-config.json"),
+                "/mcpServers/tokensave",
+            ),
+            SurfaceKind::JetBrains => server_in(
+                &super::copilot_jetbrains_dir(home).join("mcp.json"),
+                "/servers/tokensave",
+            ),
+        }
+    }
+
+    fn state(&self) -> SurfaceState {
+        let registered = self.mcp_registered();
+        let rules = has_rules_block(&self.instructions);
+        match (registered, rules) {
+            (true, true) => SurfaceState::Configured,
+            (true, false) | (false, true) => SurfaceState::Partial { registered },
+            (false, false) if self.root.is_dir() => SurfaceState::NotConfigured,
+            (false, false) => SurfaceState::NotDetected,
+        }
+    }
+
+    fn check_registration(&self, dc: &mut DoctorCounters) {
+        let home = self.home_dir.as_path();
+        match self.kind {
+            SurfaceKind::VsCode => doctor_check_vscode_settings(dc, &self.data_dir, self.label),
+            SurfaceKind::Cli => doctor_check_cli_settings(dc, home),
+            SurfaceKind::JetBrains => doctor_check_jetbrains_settings(dc, home),
+        }
+    }
+}
+
+/// Every Copilot surface `install` can write, in report order.
+fn copilot_surfaces(home: &Path) -> Vec<CopilotSurface> {
+    let vscode = |label, data_dir: PathBuf| CopilotSurface {
+        label,
+        kind: SurfaceKind::VsCode,
+        root: data_dir.join("User"),
+        instructions: data_dir
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md"),
+        data_dir,
+        home_dir: home.to_path_buf(),
+    };
+    let jetbrains_dir = super::copilot_jetbrains_dir(home);
+    vec![
+        vscode("VS Code", super::vscode_data_dir(home)),
+        vscode("VS Code Insiders", super::vscode_insiders_data_dir(home)),
+        CopilotSurface {
+            label: "Copilot CLI",
+            kind: SurfaceKind::Cli,
+            root: super::copilot_cli_dir(home),
+            data_dir: PathBuf::new(),
+            instructions: super::copilot_cli_dir(home).join("copilot-instructions.md"),
+            home_dir: home.to_path_buf(),
+        },
+        CopilotSurface {
+            label: "JetBrains",
+            kind: SurfaceKind::JetBrains,
+            // `install` treats the plugin as present when this parent exists.
+            root: jetbrains_dir
+                .parent()
+                .map_or_else(|| jetbrains_dir.clone(), Path::to_path_buf),
+            data_dir: PathBuf::new(),
+            instructions: jetbrains_dir.join("global-copilot-instructions.md"),
+            home_dir: home.to_path_buf(),
+        },
+    ]
+}
+
+/// Explain a half-configured surface. The common VS Code case (#1117): the
+/// instructions are current but `User/mcp.json` lost the server after install.
+fn report_partial_surface(dc: &mut DoctorCounters, surface: &CopilotSurface, registered: bool) {
+    if registered {
+        dc.info(&format!(
+            "{}: MCP server registered but tokensave instructions missing — \
+             `tokensave install --agent copilot` restores them",
+            surface.label
+        ));
+        return;
+    }
+    dc.info(&format!(
+        "{}: tokensave instructions are installed but the MCP server is not, so the \
+         registration was removed after install (manual edit, reset, or a sync \
+         service replacing the MCP config) — `tokensave install --agent copilot` restores it",
+        surface.label
+    ));
+    if surface.kind == SurfaceKind::VsCode {
+        dc.info(
+            "  VS Code Settings Sync can replace User/mcp.json from another machine; \
+             if it does, exclude MCP servers from sync or register tokensave on that machine too",
+        );
+    }
+}
+
+/// Report VS Code profiles (#1117). A profile that does not share the default
+/// profile's settings keeps its own `mcp.json`, so a registration in
+/// `User/mcp.json` does not reach it. Informational: whether a profile shares
+/// settings is not recorded where tokensave can read it reliably.
+fn report_vscode_profiles(dc: &mut DoctorCounters, user_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(user_dir.join("profiles")) else {
+        return;
+    };
+    let mut total = 0usize;
+    let mut registered = 0usize;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        total += 1;
+        let mcp_json = entry.path().join("mcp.json");
+        if mcp_json.exists()
+            && load_jsonc_file(&mcp_json)
+                .pointer("/servers/tokensave")
+                .is_some()
+        {
+            registered += 1;
+        }
+    }
+    if total == 0 {
+        return;
+    }
+    dc.info(&format!(
+        "VS Code has {total} custom profile(s); tokensave is registered in {registered} of \
+         their own mcp.json files. A profile that does not share the default profile's \
+         settings needs its own registration (MCP: Add Server in that profile)."
+    ));
 }

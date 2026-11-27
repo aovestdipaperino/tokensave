@@ -103,11 +103,14 @@ const CANONICAL_RULES_MARKDOWN: &str = "## Prefer tokensave MCP tools\n\n\
 Before reading source files or scanning a codebase, use the tokensave MCP tools: \
 `tokensave_context` for exploration, `tokensave_search` for a known symbol, plus \
 `tokensave_callers`, `tokensave_callees`, `tokensave_impact`, `tokensave_node`, \
-`tokensave_files`, and `tokensave_affected`. A tool that is not in your tool \
-list is listed by calling `tokensave_more` with its area: `navigate` for \
-`tokensave_node`, `git` for `tokensave_affected` and the branch tools.\n\n\
-To read a file's contents, use `tokensave_read`: it reads any file in the \
-project, indexed or not (except under `.git`), and slices with \
+`tokensave_files`, and `tokensave_affected`. Use core tools directly. If the host supports targeted \
+schema discovery, look up the exact tool name. For an unlisted tool, use \
+`tokensave_more` with its area, such as `navigate` for `tokensave_node` or \
+`git` for `tokensave_affected`.\n\n\
+For files inside the selected repository (the active graph root or an explicit \
+`graph_root`), use `tokensave_read`, including unindexed files outside `.git`. Use \
+the host's authorized reader for external files such as plugin skills, global \
+instructions, and configuration. TokenSave slices repository files with \
 `mode: \"lines\"` or maps a file's symbols with `mode: \"map\"` instead of \
 pulling in the whole body. Use the harness's own file-read tool for a file you \
 are about to edit.\n\n\
@@ -176,16 +179,18 @@ prompt:\n\n\
 > for the files a literal search reports as `unscanned`, and Read only\n\
 > the ranges a result points to.\n\n\
 ### When the hook denies a search\n\n\
-A denied grep, glob, or find means the search looked like a code-symbol lookup \
-and a tokensave tool answers it better. It is not an obstacle to route around. \
-Use `tokensave_search` for a symbol by name, `tokensave_search` with \
-`literal: true` (searching each form a call takes in the file's language) or \
-`tokensave_callers` for its uses, `tokensave_impact` for what depends on it, \
-`tokensave_context` for a concept, and \
-`tokensave_files` for files by path. A search that is not about code (logs, \
-docs, config) passes when it names the file type, e.g. `--include='*.md'` or a \
-`*.md` glob. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` only for a search that is \
-genuinely not about code symbols and still gets denied, and never pre-emptively.\n";
+Use `tokensave_search` by name for indexed definitions. For text matches \
+(including references and comments), preserve the original pattern, scope, and \
+filters. Use `tokensave grep` with a supported grep, rg, or git grep command to \
+add index facts, or run the original command with `TOKENSAVE_DISABLE_GREP_HOOK=1`. \
+Use `tokensave_callers` for indexed call edges, `tokensave_impact` for what depends \
+on a symbol, `tokensave_context` for a concept, and `tokensave_files` for paths. \
+For logs, docs, or config, name the file type, e.g. `--include='*.md'` or a `*.md` glob.\n\n\
+### Native search suggestions\n\n\
+Claude Code Bash and native Grep searches run with their usual permissions by default. If the hook \
+suggests an indexed definition lookup, use the Bash output for exact matches \
+or when the MCP tool or a fresh index is unavailable. To skip advice for one \
+Bash call, prefix the command with `TOKENSAVE_DISABLE_GREP_HOOK=1`.\n";
 
 /// The Pi-specific overlay on top of the canonical body.
 ///
@@ -893,6 +898,14 @@ pub fn check_managed_rules_file(dc: &mut DoctorCounters, path: &Path, agent_id: 
 /// Missing files are reported as warnings, not failures, because some
 /// variants (e.g. `JetBrains` Copilot instructions) may not be present on every
 /// machine.
+/// True when `path` holds a tokensave rules block, managed or legacy.
+/// Read-only; a missing or unreadable file holds none.
+pub fn has_rules_block(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|contents| {
+        contents.contains(BLOCK_START_PREFIX) || contents.contains(LEGACY_RULES_MARKER)
+    })
+}
+
 pub fn check_shared_rules_block(dc: &mut DoctorCounters, path: &Path, agent_id: &str) {
     let Some(expected) = expected_rules_markdown(agent_id) else {
         dc.warn(&format!("no canonical rules defined for agent {agent_id}"));
@@ -975,6 +988,14 @@ mod tests {
 
     /// #866: the integration guidance never promotes repository text to
     /// instructions; it tells the agent to treat it as data.
+    #[test]
+    fn canonical_rules_scope_file_reads_to_the_selected_repository() {
+        let body = canonical_rules_markdown();
+        assert!(body.contains("For files inside the selected repository"));
+        assert!(body.contains("`graph_root`"));
+        assert!(body.contains("authorized reader for external files"));
+    }
+
     #[test]
     fn canonical_rules_say_repository_content_is_data() {
         let body = canonical_rules_markdown();

@@ -11,10 +11,37 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::accounting::classifier;
+use crate::accounting::constants::{BASH_SEARCH_EXCLUDED_PREFIX, BASH_SEARCH_TOOL, BASH_TOOL};
 use crate::accounting::pricing;
 use crate::context::read_modes::estimate_tokens;
 use crate::global_db::GlobalDb;
+use crate::hooks::{classify_bash_search, BashSearchVerdict};
 use crate::types::CostTurn;
+
+/// The token stored in `turns.tool_names` for one tool use.
+///
+/// A `Bash` use that is a code search is tagged with the verdict, so
+/// `tokensave discover` can count it, or say why it did not, without the
+/// database keeping the command text (#1118). Every other tool is stored
+/// as named.
+fn stored_tool_name(name: &str, bash_command: Option<&str>) -> String {
+    match bash_command.map(classify_bash_search) {
+        Some(BashSearchVerdict::Replaceable) => BASH_SEARCH_TOOL.to_string(),
+        Some(BashSearchVerdict::Excluded(why)) => {
+            format!("{BASH_SEARCH_EXCLUDED_PREFIX}{}", why.as_str())
+        }
+        Some(BashSearchVerdict::NotSearch) | None => name.to_string(),
+    }
+}
+
+/// The agent's own tool name for a stored token: `Bash:grep…` is `Bash`.
+fn base_tool_name(stored: &str) -> &str {
+    if stored.starts_with(BASH_SEARCH_TOOL) {
+        BASH_TOOL
+    } else {
+        stored
+    }
+}
 
 /// Whether a data source contributes complete, partial, or no coverage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -143,25 +170,27 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<(CostT
                     tool_use_ids.push(id.to_string());
                 }
                 if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
-                    tool_names_vec.push(name.to_string());
-                    if name == "Bash" {
-                        if let Some(cmd) = block
-                            .get("input")
-                            .and_then(|i| i.get("command"))
-                            .and_then(|c| c.as_str())
-                        {
-                            bash_commands.push(cmd.to_string());
-                        }
+                    let command = (name == BASH_TOOL)
+                        .then(|| {
+                            block
+                                .get("input")
+                                .and_then(|i| i.get("command"))
+                                .and_then(|c| c.as_str())
+                        })
+                        .flatten();
+                    tool_names_vec.push(stored_tool_name(name, command));
+                    if let Some(cmd) = command {
+                        bash_commands.push(cmd.to_string());
                     }
                 }
             }
         }
     }
 
-    // Classify
+    // Classify on the tool names as the agent spelled them.
     let tool_refs: Vec<&str> = tool_names_vec
         .iter()
-        .map(std::string::String::as_str)
+        .map(|name| base_tool_name(name))
         .collect();
     let bash_refs: Vec<&str> = bash_commands
         .iter()
@@ -595,6 +624,66 @@ mod tests {
             "exactly one coverage entry (claude)"
         );
         assert_eq!(stats.coverage[0].agent, "claude");
+    }
+
+    /// #1118: a transcript with declaration-prefixed Bash greps, other
+    /// eligible and ineligible searches, and a build command goes through the
+    /// real ingest path; `discover` counts the eligible searches and names a
+    /// reason for each search it leaves out.
+    #[tokio::test]
+    async fn bash_search_transcript_feeds_discover() {
+        use crate::accounting::discover::{analyze, ExclusionReason, NavBucket};
+        use crate::hooks::BashSearchExclusion as Why;
+
+        const FIXTURE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/discover/bash_search_transcript.jsonl"
+        ));
+        let home_tmp = TempDir::new().unwrap();
+        let db_tmp = TempDir::new().unwrap();
+        let session_dir = home_tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("proj");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("sess.jsonl"), FIXTURE).unwrap();
+        let gdb = open_test_db(&db_tmp).await;
+
+        let stats = ingest_claude_from_home(&gdb, home_tmp.path()).await;
+        assert_eq!(stats.turns_inserted, 10);
+
+        let rows = gdb.nav_turns_since(0).await;
+        let stored: Vec<&str> = rows.iter().map(|(names, _)| names.as_str()).collect();
+        assert!(stored.contains(&"Bash"), "a build stays plain Bash");
+        assert!(
+            !stored.iter().any(|names| names.contains("grep -")),
+            "command text must never be stored: {stored:?}"
+        );
+
+        let report = analyze(&rows);
+        assert_eq!(report.total_turns, 10);
+        assert_eq!(report.buckets.len(), 1);
+        let bash = &report.buckets[0];
+        assert_eq!(bash.bucket, NavBucket::BashGrep);
+        // const in a .js file, `fn` definition in a directory, piped to head.
+        assert_eq!(bash.turns, 3);
+        let sized = |chars: usize| u64::from(estimate_tokens(&"x".repeat(chars)));
+        assert_eq!(
+            bash.addressable_input_tokens,
+            sized(400) + sized(800) + sized(200)
+        );
+        assert_eq!(
+            report.exclusions,
+            vec![
+                (ExclusionReason::Command(Why::ExplicitOptOut), 1),
+                (ExclusionReason::Command(Why::CompoundCommand), 1),
+                (ExclusionReason::Command(Why::NonSymbolPattern), 1),
+                (ExclusionReason::Command(Why::DeclarationOutsideJsTs), 1),
+                (ExclusionReason::Command(Why::NonCodeTarget), 1),
+                (ExclusionReason::MixedWithOtherTools, 1),
+            ]
+        );
     }
 
     #[test]

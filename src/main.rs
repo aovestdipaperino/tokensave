@@ -362,6 +362,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
     }
 
+    // Experimental SCIP comparison is read-only and bypasses startup maintenance.
+    if let Commands::ScipCompare {
+        project,
+        index,
+        rebase_root,
+        max_index_mib,
+        samples,
+    } = &command
+    {
+        let root = tokensave::config::resolve_path_with_discovery(project.clone());
+        if !tokensave::config::load_config(&root)?.enable_scip {
+            return Err(tokensave::errors::TokenSaveError::Config {
+                message: format!(
+                    "SCIP comparison is disabled. Set \"enable_scip\": true in '{}'.",
+                    tokensave::config::get_config_path(&root).display()
+                ),
+            });
+        }
+        tokensave::cancel::install_signal_handlers();
+        let report = tokensave::scip::compare(&tokensave::scip::Options {
+            root,
+            index: index.clone(),
+            rebase_root: *rebase_root,
+            max_index_bytes: max_index_mib.saturating_mul(1024 * 1024),
+            samples: *samples,
+        })
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
     // OKF commands never touch the code index or the user config (import
     // writes only the project's `okf/` state); skip startup maintenance.
     if let Commands::Okf { action } = &command {
@@ -971,6 +1002,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
+        Commands::ScipCompare { .. } => unreachable!("SCIP comparison dispatched before startup"),
         Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
         Commands::Grep { .. } => unreachable!("grep is dispatched before startup"),
         Commands::IntegrityCheck { .. } => {
@@ -1165,8 +1197,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 global::check_for_update(&mut config, false, true);
             }
         }
-        Commands::Tool { name, args } => {
-            tool_command::run(name, args).await?;
+        Commands::Tool { invocation } => {
+            let mut invocation = invocation.into_iter().peekable();
+            let name = invocation.next();
+            // Clap used to consume the separator before the trailing arguments.
+            invocation.next_if(|arg| arg == "--");
+            tool_command::run(name, invocation.collect()).await?;
         }
         Commands::Install {
             agent,
@@ -1641,6 +1677,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 tokensave::cancel::install_signal_handlers();
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
+                apply_disabled_tool_areas(&server);
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
                 exit_after_serve(profiler);
             };
@@ -1688,6 +1725,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 tokensave::mcp::McpServer::new(cg, scope_prefix).await
             };
+            apply_disabled_tool_areas(&server);
             // Opt-in filesystem watcher (#937): off unless the user config or
             // `--watch` turns it on, in which case nothing below changes but a
             // watcher task is added beside the on-demand staleness check.
@@ -2860,6 +2898,20 @@ fn watch_for_orphaning() {
 /// No reparenting signal to watch for off Unix.
 #[cfg(not(unix))]
 fn watch_for_orphaning() {}
+
+/// Hides the tool areas that `disabled_tool_areas` in the user configuration
+/// names, and warns about each name that is not a tool area.
+fn apply_disabled_tool_areas(server: &tokensave::mcp::McpServer) {
+    let unknown =
+        server.set_disabled_tool_areas(&tokensave::user_config::disabled_tool_areas_setting());
+    if !unknown.is_empty() {
+        eprintln!(
+            "[tokensave] `{}` in the user configuration names no tool area: {}",
+            tokensave::mcp::tools::DISABLED_TOOL_AREAS_SETTING,
+            unknown.join(", ")
+        );
+    }
+}
 
 /// Runs a `serve` MCP server on stdio until the client leaves, the idle
 /// timeout passes, or a signal arrives, then shuts it down.

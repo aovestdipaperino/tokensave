@@ -1,4 +1,7 @@
 //! Dirty sentinel and cross-process sync lock.
+use super::constants::{
+    SYNC_LOCK_RELEASE_RACE_ATTEMPTS, SYNC_LOCK_WAIT_POLL, SYNC_LOCK_WAIT_TIMEOUT,
+};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -305,51 +308,103 @@ pub fn try_acquire_auto_sync_lock(project_root: &Path) -> Result<AutoSyncLockGua
 /// Internal: exposed for integration tests; not part of the stable public API.
 #[doc(hidden)]
 pub fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
+    match attempt_sync_lock(project_root)? {
+        SyncLockAttempt::Acquired(guard) => Ok(guard),
+        SyncLockAttempt::Held { holder_pid } => Err(sync_lock_held_error(project_root, holder_pid)),
+    }
+}
+
+/// Result of one non-blocking attempt to take the sync lock.
+enum SyncLockAttempt {
+    Acquired(SyncLockGuard),
+    /// Live contention: a running process owns the lock. `None` means the
+    /// lockfile is still empty, so its creator has not written its PID yet.
+    Held {
+        holder_pid: Option<u32>,
+    },
+}
+
+/// The `SyncLock` error reported for live contention, unchanged for callers
+/// that do not wait.
+fn sync_lock_held_error(project_root: &Path, holder_pid: Option<u32>) -> TokenSaveError {
+    let lock_path = sync_lock_path(project_root);
+    let message = match holder_pid {
+        Some(pid) => format!(
+            "another sync is already in progress (PID {pid}). If this is stale, remove {}",
+            lock_path.display()
+        ),
+        None => format!(
+            "existing lockfile has no valid PID; refusing to break {}",
+            lock_path.display()
+        ),
+    };
+    TokenSaveError::SyncLock { message }
+}
+
+fn sync_lock_path(project_root: &Path) -> PathBuf {
+    get_tokensave_dir(project_root).join("sync.lock")
+}
+
+/// One non-blocking attempt to take the sync lock.
+///
+/// Live contention is returned as [`SyncLockAttempt::Held`]; filesystem and
+/// permission failures and malformed lockfiles stay `Err`, so a caller that
+/// waits for contention never hides them. A live lock is never removed.
+fn attempt_sync_lock(project_root: &Path) -> Result<SyncLockAttempt> {
     use std::io::Write;
-    let lock_path = get_tokensave_dir(project_root).join("sync.lock");
+    let lock_path = sync_lock_path(project_root);
     let pid = std::process::id();
 
-    // Fast path: try atomic create.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-    {
-        Ok(mut f) => {
-            let _ = write!(f, "{pid}");
-            return Ok(SyncLockGuard { path: lock_path });
+    let mut attempt = 0;
+    let contents = loop {
+        attempt += 1;
+        // Fast path: try atomic create.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut f) => {
+                let _ = write!(f, "{pid}");
+                return Ok(SyncLockAttempt::Acquired(SyncLockGuard { path: lock_path }));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Fall through to stale-check below.
+            }
+            Err(e) => {
+                return Err(TokenSaveError::SyncLock {
+                    message: format!("could not create lockfile '{}': {e}", lock_path.display()),
+                });
+            }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Fall through to stale-check below.
-        }
-        Err(e) => {
-            return Err(TokenSaveError::SyncLock {
-                message: format!("could not create lockfile '{}': {e}", lock_path.display()),
-            });
-        }
-    }
 
-    // Lockfile exists — check if the owning process is still alive.
-    let contents =
-        std::fs::read_to_string(&lock_path).map_err(|error| TokenSaveError::SyncLock {
-            message: format!("existing lockfile could not be read: {error}"),
-        })?;
+        // Lockfile exists — check if the owning process is still alive.
+        match std::fs::read_to_string(&lock_path) {
+            Ok(contents) => break contents,
+            // The owner released the lock between our create and this read.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && attempt < SYNC_LOCK_RELEASE_RACE_ATTEMPTS => {}
+            Err(error) => {
+                return Err(TokenSaveError::SyncLock {
+                    message: format!("existing lockfile could not be read: {error}"),
+                })
+            }
+        }
+    };
+    let contents = contents.trim();
+    // `create_new` and the PID write are two steps, so a live owner can be
+    // observed with an empty file. Anything else that is not a PID is
+    // malformed and is never broken.
+    if contents.is_empty() {
+        return Ok(SyncLockAttempt::Held { holder_pid: None });
+    }
     let existing_pid = contents
-        .trim()
         .parse::<u32>()
-        .map_err(|_| TokenSaveError::SyncLock {
-            message: format!(
-                "existing lockfile has no valid PID; refusing to break {}",
-                lock_path.display()
-            ),
-        })?;
+        .map_err(|_| sync_lock_held_error(project_root, None))?;
     if is_pid_alive(existing_pid) {
-        return Err(TokenSaveError::SyncLock {
-            message: format!(
-                "another sync is already in progress (PID {existing_pid}). \
-                 If this is stale, remove {}",
-                lock_path.display()
-            ),
+        return Ok(SyncLockAttempt::Held {
+            holder_pid: Some(existing_pid),
         });
     }
 
@@ -363,7 +418,80 @@ pub fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
             message: format!("could not reclaim lockfile: {e}"),
         })?;
     let _ = write!(f, "{pid}");
-    Ok(SyncLockGuard { path: lock_path })
+    Ok(SyncLockAttempt::Acquired(SyncLockGuard { path: lock_path }))
+}
+
+/// Bounds for waiting on a live peer's sync lock. The default is
+/// [`SYNC_LOCK_WAIT_TIMEOUT`] polled every [`SYNC_LOCK_WAIT_POLL`]; tests
+/// inject shorter bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SyncLockWaitPolicy {
+    pub(crate) timeout: Duration,
+    pub(crate) poll: Duration,
+}
+
+impl Default for SyncLockWaitPolicy {
+    fn default() -> Self {
+        Self {
+            timeout: SYNC_LOCK_WAIT_TIMEOUT,
+            poll: SYNC_LOCK_WAIT_POLL,
+        }
+    }
+}
+
+/// Result of [`acquire_sync_lock_bounded`].
+pub(crate) enum SyncLockWait {
+    /// The lock is ours. `contended` is true when a peer held it first, so
+    /// the caller should check whether the peer already did its work.
+    Acquired {
+        guard: SyncLockGuard,
+        contended: bool,
+    },
+    /// A live process still held the lock when the wait ended.
+    TimedOut { holder_pid: Option<u32> },
+}
+
+/// Outcome of an automatic refresh that waits for the sync lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefreshOutcome {
+    /// The index is as fresh as the refresh could make it: this call synced
+    /// or nothing was stale.
+    Refreshed,
+    /// A peer held the lock and finished the same work meanwhile, so this
+    /// call did not sync again.
+    PeerRefreshed,
+    /// A live peer kept the lock past the wait; the index was not refreshed.
+    LockTimedOut { holder_pid: Option<u32> },
+}
+
+/// Wait up to `policy.timeout` for live contention on the sync lock to end,
+/// sleeping asynchronously between attempts so the runtime is not blocked.
+///
+/// Genuine lock failures (permissions, unreadable or malformed lockfiles) are
+/// returned at once rather than waited out. A shutdown request ends the wait
+/// with the cancellation error, and dropping the future abandons it.
+pub(crate) async fn acquire_sync_lock_bounded(
+    project_root: &Path,
+    policy: SyncLockWaitPolicy,
+) -> Result<SyncLockWait> {
+    let deadline = Instant::now() + policy.timeout;
+    let mut contended = false;
+    loop {
+        crate::cancel::check("sync")?;
+        match attempt_sync_lock(project_root)? {
+            SyncLockAttempt::Acquired(guard) => {
+                return Ok(SyncLockWait::Acquired { guard, contended })
+            }
+            SyncLockAttempt::Held { holder_pid } => {
+                contended = true;
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(SyncLockWait::TimedOut { holder_pid });
+                }
+                tokio::time::sleep(policy.poll.min(deadline - now)).await;
+            }
+        }
+    }
 }
 
 const BRANCH_OPERATION_LOCK_TIMEOUT: Duration = Duration::from_secs(30);

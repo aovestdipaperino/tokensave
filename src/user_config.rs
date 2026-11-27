@@ -165,6 +165,15 @@ pub struct UserConfig {
     #[serde(default)]
     pub caveman_compatibility: bool,
 
+    /// The tool areas that the MCP server never lists: any of `analysis`,
+    /// `edit`, `git`, `memory` and `navigate`. Use it when another MCP server
+    /// already supplies the tools of an area. The core toolset, the full
+    /// toolset and `tokensave_more` all leave these areas out. A call to a
+    /// tool of such an area does not run: it answers that the tool is
+    /// disabled. Empty by default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tool_areas: Vec<String>,
+
     /// Machine-wide CPU usage profile for projects whose
     /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
     /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
@@ -368,6 +377,7 @@ impl Default for UserConfig {
             claude_hooks: true,
             auto_init: true,
             caveman_compatibility: false,
+            disabled_tool_areas: Vec::new(),
             cpu_usage: None,
             state_dir: None,
             benchmark: BenchmarkPreferences::default(),
@@ -405,6 +415,8 @@ pub(crate) struct ConfigFile {
     auto_init: bool,
     #[serde(default)]
     caveman_compatibility: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    disabled_tool_areas: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -434,6 +446,7 @@ impl ConfigFile {
             claude_hooks: c.claude_hooks,
             auto_init: c.auto_init,
             caveman_compatibility: c.caveman_compatibility,
+            disabled_tool_areas: c.disabled_tool_areas.clone(),
             cpu_usage: c.cpu_usage,
             state_dir: c.state_dir.clone(),
             benchmark: c.benchmark,
@@ -973,6 +986,17 @@ pub fn caveman_compatibility_setting() -> bool {
         .is_some_and(|file| file.caveman_compatibility)
 }
 
+/// The `disabled_tool_areas` setting in `config.toml`, read without the side
+/// effects of [`UserConfig::load`]. A missing or unparseable file means the
+/// default: no area is turned off.
+pub fn disabled_tool_areas_setting() -> Vec<String> {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .map(|file| file.disabled_tool_areas)
+        .unwrap_or_default()
+}
+
 pub(crate) const CONFIG_LOCK_FILENAME: &str = "config.toml.lock";
 
 /// Returns the path to the advisory lock guarding `config.toml`'s
@@ -1306,6 +1330,7 @@ impl UserConfig {
             || self.claude_hooks != base.claude_hooks
             || self.auto_init != base.auto_init
             || self.caveman_compatibility != base.caveman_compatibility
+            || self.disabled_tool_areas != base.disabled_tool_areas
             || self.cpu_usage != base.cpu_usage
             || self.state_dir != base.state_dir
             || self.benchmark != base.benchmark
@@ -1377,6 +1402,11 @@ impl UserConfig {
                 on_disk.caveman_compatibility
             } else {
                 self.caveman_compatibility
+            },
+            disabled_tool_areas: if self.disabled_tool_areas == base.disabled_tool_areas {
+                on_disk.disabled_tool_areas
+            } else {
+                self.disabled_tool_areas.clone()
             },
             cpu_usage: if self.cpu_usage == base.cpu_usage {
                 on_disk.cpu_usage
@@ -1561,6 +1591,7 @@ mod tests {
             claude_hooks: false,
             auto_init: false,
             caveman_compatibility: true,
+            disabled_tool_areas: vec!["memory".to_string()],
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             state_dir: Some("~/tokensave-state".to_string()),
             benchmark: BenchmarkPreferences {
@@ -1649,6 +1680,46 @@ mod tests {
         assert!(text.contains("caveman_compatibility = true"), "{text}");
         let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
         assert!(!state.contains("caveman_compatibility"), "{state}");
+    }
+
+    #[test]
+    fn disabled_tool_areas_default_empty_and_round_trip() {
+        let _home = test_home();
+        assert_eq!(disabled_tool_areas_setting(), Vec::<String>::new());
+        assert_eq!(
+            UserConfig::default().disabled_tool_areas,
+            Vec::<String>::new()
+        );
+
+        // An empty list is not written.
+        assert!(UserConfig::load().save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(!text.contains("disabled_tool_areas"), "{text}");
+
+        assert!(sample_config().save());
+        assert_eq!(UserConfig::load().disabled_tool_areas, ["memory"]);
+        assert_eq!(disabled_tool_areas_setting(), ["memory"]);
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(
+            text.contains(r#"disabled_tool_areas = ["memory"]"#),
+            "{text}"
+        );
+        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
+        assert!(!state.contains("disabled_tool_areas"), "{state}");
+    }
+
+    #[test]
+    fn disabled_tool_areas_survive_a_concurrent_stale_save() {
+        let _home = test_home();
+        assert!(UserConfig::load().save());
+        let stale = UserConfig::load();
+        let mut changed = UserConfig::load();
+        changed.disabled_tool_areas = vec!["memory".to_string()];
+        assert!(changed.save());
+        let mut stale = stale;
+        stale.upload_enabled = !stale.upload_enabled;
+        assert!(stale.save());
+        assert_eq!(UserConfig::load().disabled_tool_areas, ["memory"]);
     }
 
     #[test]
