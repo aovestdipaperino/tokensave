@@ -235,6 +235,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_node()),
         graph_scoped(def_status()),
         graph_scoped(def_files()),
+        graph_scoped(def_dotnet()),
         def_affected(),
         graph_scoped(def_dead_code()),
         graph_scoped(def_ambiguous_calls()),
@@ -379,6 +380,7 @@ pub fn tool_capability(name: &str) -> Option<ToolCapability> {
         | "tokensave_entities"
         | "tokensave_field_sites"
         | "tokensave_file_dependents"
+        | crate::dotnet::constants::TOOL
         | "tokensave_files"
         | "tokensave_find_exact_symbol"
         | "tokensave_gini"
@@ -1304,6 +1306,25 @@ fn def_node() -> ToolDefinition {
                 }
             },
             "required": ["node_id"]
+        }),
+    )
+}
+
+fn def_dotnet() -> ToolDefinition {
+    def(
+        crate::dotnet::constants::TOOL,
+        ".NET Discovery",
+        "Find C# syntax or discover .NET resource and configuration keys in indexed files. Returns locations with limited coverage. Use next_offset for the next page.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["assignment", "call", "attribute", "comparison", "resources", "missing-translations", "unused-resources"]},
+                "path": {"type": "string", "description": "Indexed project-relative file or directory prefix"},
+                "name": {"type": "string", "description": "Exact syntax target or key"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": crate::dotnet::constants::MAX_LIMIT}
+            },
+            "required": ["kind"]
         }),
     )
 }
@@ -3608,6 +3629,7 @@ mod tests {
             "tokensave_node",
             "tokensave_status",
             "tokensave_files",
+            crate::dotnet::constants::TOOL,
             "tokensave_dead_code",
             "tokensave_ambiguous_calls",
             "tokensave_module_api",

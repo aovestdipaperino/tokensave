@@ -83,7 +83,7 @@ unchanged.
 
 - SQL-bearing source files: **42**.
 - SQL literal/template occurrences: **386**.
-- SQL literal/template occurrences: **388**.
+- SQL literal/template occurrences: **389**.
 - Functions retained for construction/binding context: **183**.
 
 ## Source file index
@@ -100,7 +100,7 @@ unchanged.
 | [src/db/migrations.rs](../src/db/migrations.rs) | 57 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
-| [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
+| [src/db/queries/files.rs](../src/db/queries/files.rs) | 9 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 5 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
@@ -2209,7 +2209,7 @@ SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind FROM 
 
 #### Q0146 — `get_code_files`
 
-Source: [src/db/queries/files.rs:140](../src/db/queries/files.rs#L140).
+Source: [src/db/queries/files.rs:175](../src/db/queries/files.rs#L175).
 
 ```sql
 SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind
@@ -2218,7 +2218,7 @@ SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind
 
 #### Q0147 — `delete_file`
 
-Source: [src/db/queries/files.rs:157](../src/db/queries/files.rs#L157).
+Source: [src/db/queries/files.rs:192](../src/db/queries/files.rs#L192).
 
 ```sql
 DELETE FROM files WHERE path = ?1
@@ -8510,7 +8510,7 @@ Source: [src/db/queries/files.rs:115](../src/db/queries/files.rs#L115).
 
 ### `get_code_files` — src/db/queries/files.rs:136
 
-Source: [src/db/queries/files.rs:136](../src/db/queries/files.rs#L136).
+Source: [src/db/queries/files.rs:171](../src/db/queries/files.rs#L171).
 
 ```rust
     pub async fn get_code_files(&self) -> Result<Vec<FileRecord>> {
@@ -8533,7 +8533,7 @@ Source: [src/db/queries/files.rs:136](../src/db/queries/files.rs#L136).
 
 ### `delete_file` — src/db/queries/files.rs:154
 
-Source: [src/db/queries/files.rs:154](../src/db/queries/files.rs#L154).
+Source: [src/db/queries/files.rs:189](../src/db/queries/files.rs#L189).
 
 ```rust
     pub async fn delete_file(&self, path: &str) -> Result<()> {
@@ -13830,3 +13830,25 @@ bound, and no index or user text is interpolated. Q0428–Q0431 share one read
 transaction for a consistent snapshot. Document count is bounded by the SCIP
 decoder's document limit and the index-size limit. No migrations or writes
 occur.
+
+### .NET discovery
+
+#### Q0432 ? `dotnet_paths`: Bounded indexed discovery paths
+
+```sql
+SELECT path FROM files
+             WHERE (?1 IS NULL OR path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || '/')
+               AND (lower(substr(path, -length(?2) - 1)) = '.' || ?2
+                 OR (?3 AND lower(substr(path, -length(?4) - 1)) = '.' || ?4)
+                 OR (?3 AND lower(substr(path, -length(?5) - 1)) = '.' || ?5))
+             ORDER BY lower(substr(path, -length(?2) - 1)) = '.' || ?2, path
+             LIMIT ?6
+```
+
+The [candidate-file query](../src/db/queries/files.rs#L140) selects paths from
+`files`. The nullable project-relative prefix is bound as ?1 and is matched
+exactly or at a directory boundary. ?2 is the C# extension, ?3 enables XML,
+and ?4 and ?5 are the RESX and CONFIG extensions. XML candidates sort before
+C# reference sources, and each group sorts by path. ?6 is the file limit plus
+one row to detect truncation. The query runs once per request and never reads
+file contents.

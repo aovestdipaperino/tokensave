@@ -127,6 +127,41 @@ impl Database {
         }
     }
 
+    /// Lists a bounded, deterministic batch of indexed paths for .NET discovery.
+    pub(crate) async fn dotnet_paths(
+        &self,
+        prefix: Option<&str>,
+        resources: bool,
+    ) -> Result<Vec<String>> {
+        use crate::dotnet::constants::{CONFIG_EXT, MAX_FILES, RESX_EXT, SOURCE_EXT};
+
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT path FROM files
+             WHERE (?1 IS NULL OR path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || '/')
+               AND (lower(substr(path, -length(?2) - 1)) = '.' || ?2
+                 OR (?3 AND lower(substr(path, -length(?4) - 1)) = '.' || ?4)
+                 OR (?3 AND lower(substr(path, -length(?5) - 1)) = '.' || ?5))
+             ORDER BY lower(substr(path, -length(?2) - 1)) = '.' || ?2, path
+             LIMIT ?6",
+                params![
+                    prefix,
+                    SOURCE_EXT,
+                    resources,
+                    RESX_EXT,
+                    CONFIG_EXT,
+                    (MAX_FILES + 1) as i64
+                ],
+            )
+            .await?;
+        let mut paths = Vec::new();
+        while let Some(row) = rows.next().await? {
+            paths.push(row.get(0)?);
+        }
+        Ok(paths)
+    }
+
     /// Returns all file records.
     pub async fn get_all_files(&self) -> Result<Vec<FileRecord>> {
         let mut rows = self

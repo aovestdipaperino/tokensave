@@ -1,0 +1,16 @@
+pub(crate) const SOURCE_EXT: &str = "cs";
+pub(crate) const RESX_EXT: &str = "resx";
+pub(crate) const CONFIG_EXT: &str = "config";
+pub(crate) const MAX_FILES: usize = 256;
+pub(super) const MAX_BYTES: usize = 512 * 1024;
+pub(super) const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_LIMIT: usize = 50;
+pub const DEFAULT_LIMIT: usize = 20;
+pub(super) const MAX_TEXT: usize = 160;
+pub(super) const MAX_ENTRIES: usize = 8192;
+pub(super) const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+pub(crate) const TOOL: &str = "tokensave_dotnet";
+pub(super) const MAX_LOCATIONS: usize = 2;
+pub(super) const MAX_PATH_BYTES: usize = 384;
+pub(super) const DESIGNER_SUFFIX: &str = ".designer.cs";
+pub(super) const MAX_PAGE_BYTES: usize = 12 * 1024;

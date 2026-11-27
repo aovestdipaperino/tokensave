@@ -358,6 +358,10 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     }
 }
 
+fn confirmed_missing(result: std::io::Result<bool>) -> bool {
+    matches!(result, Ok(false))
+}
+
 fn project_db_path(project_path: &Path) -> std::path::PathBuf {
     crate::config::get_tokensave_dir(project_path).join(constants::PROJECT_DB_FILENAME)
 }
@@ -490,7 +494,7 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .list_project_paths()
         .await
         .into_iter()
-        .filter(|p| !project_db_path(Path::new(p)).exists())
+        .filter(|p| confirmed_missing(project_db_path(Path::new(p)).try_exists()))
         .collect();
     if stale.is_empty() {
         dc.pass("No stale projects in global DB");
@@ -532,7 +536,11 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         return;
     }
 
-    let purged = gdb.delete_projects(&stale).await;
+    let still_stale = stale
+        .into_iter()
+        .filter(|p| confirmed_missing(project_db_path(Path::new(p)).try_exists()))
+        .collect::<Vec<_>>();
+    let purged = gdb.delete_projects(&still_stale).await;
     dc.pass(&format!("Purged {purged} stale project(s)"));
 }
 
@@ -1063,5 +1071,24 @@ mod tests {
         assert_eq!(format_bytes(2048), "2.0 KB");
         // 1536 = 1.5 KB
         assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+}
+
+#[cfg(test)]
+mod stale_registry_tests {
+    use super::confirmed_missing;
+
+    #[test]
+    fn only_confirmed_missing_paths_are_stale() -> std::io::Result<()> {
+        let project = tempfile::tempdir()?;
+        let index = project.path().join("index");
+        std::fs::write(&index, [])?;
+        assert!(!confirmed_missing(index.try_exists()));
+        project.close()?;
+        assert!(confirmed_missing(index.try_exists()));
+        assert!(!confirmed_missing(Err(
+            std::io::ErrorKind::PermissionDenied.into()
+        )));
+        Ok(())
     }
 }

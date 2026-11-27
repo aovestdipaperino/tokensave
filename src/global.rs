@@ -6,6 +6,9 @@ use tokensave::tokensave::TokenSave;
 /// Best-effort: register this project in the user-level global DB and
 /// accumulate the token-saved delta into the pending upload counter.
 pub(crate) async fn update_global_db(cg: &TokenSave) {
+    if !tokensave::global_db::project_registration_enabled() {
+        return;
+    }
     let tokens = cg.get_tokens_saved().await.unwrap_or(0);
     if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
         let previous = gdb.get_project_tokens(cg.project_root()).await;
