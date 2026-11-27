@@ -1641,6 +1641,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 tokensave::cancel::install_signal_handlers();
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
+                apply_disabled_tool_areas(&server);
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
                 exit_after_serve(profiler);
             };
@@ -1688,6 +1689,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 tokensave::mcp::McpServer::new(cg, scope_prefix).await
             };
+            apply_disabled_tool_areas(&server);
             // Opt-in filesystem watcher (#937): off unless the user config or
             // `--watch` turns it on, in which case nothing below changes but a
             // watcher task is added beside the on-demand staleness check.
@@ -2860,6 +2862,20 @@ fn watch_for_orphaning() {
 /// No reparenting signal to watch for off Unix.
 #[cfg(not(unix))]
 fn watch_for_orphaning() {}
+
+/// Hides the tool areas that `disabled_tool_areas` in the user configuration
+/// names, and warns about each name that is not a tool area.
+fn apply_disabled_tool_areas(server: &tokensave::mcp::McpServer) {
+    let unknown =
+        server.set_disabled_tool_areas(&tokensave::user_config::disabled_tool_areas_setting());
+    if !unknown.is_empty() {
+        eprintln!(
+            "[tokensave] `{}` in the user configuration names no tool area: {}",
+            tokensave::mcp::tools::DISABLED_TOOL_AREAS_SETTING,
+            unknown.join(", ")
+        );
+    }
+}
 
 /// Runs a `serve` MCP server on stdio until the client leaves, the idle
 /// timeout passes, or a signal arrives, then shuts it down.

@@ -53,17 +53,25 @@ fn halstead_diff_for(n: &crate::types::Node) -> f64 {
 /// or a symbol *name* passed where an ID is expected (the #109 CLI nit:
 /// `tokensave tool callers Helper`) read like clean answers. Fail loudly and
 /// point at the name-based lookups instead.
-async fn require_existing_node(cg: &TokenSave, node_id: &str) -> Result<Node> {
-    cg.get_node(node_id)
-        .await?
-        .ok_or_else(|| TokenSaveError::Config {
+///
+/// The message names `tokensave_callers_for` only when the session can list
+/// it.
+async fn require_existing_node(
+    cg: &TokenSave,
+    node_id: &str,
+    session: Option<&super::SessionState>,
+) -> Result<Node> {
+    cg.get_node(node_id).await?.ok_or_else(|| {
+        let by_name = super::reachable_tool(session, "tokensave_callers_for")
+            .map_or_else(String::new, |tool| format!("{tool} or "));
+        TokenSaveError::Config {
             message: format!(
                 "node not found: '{node_id}'. `node_id` expects a graph node ID \
-                 (e.g. from tokensave_search results); to look up by symbol name \
-                 use {} or tokensave_search.",
-                crate::mcp::tools::reachable_tool_name("tokensave_callers_for")
+                     (e.g. from tokensave_search results); to look up by symbol name \
+                     use {by_name}tokensave_search."
             ),
-        })
+        }
+    })
 }
 
 /// Handles `tokensave_search` tool calls.
@@ -963,6 +971,7 @@ pub(super) async fn handle_callers(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
+    session: Option<&super::SessionState>,
 ) -> Result<ToolResult> {
     // Default to direct callers only. `get_callers` is a transitive BFS, so a
     // larger default silently mixed 2-/3-hop callers into the same flat list
@@ -984,7 +993,7 @@ pub(super) async fn handle_callers(
         symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
     let (output, touched_files) = match target {
         Target::NodeId(node_id) => {
-            let _target = require_existing_node(cg, &node_id).await?;
+            let _target = require_existing_node(cg, &node_id, session).await?;
             let callers = caller_items(cg, &[node_id], max_depth, resolve_dispatch, limit).await?;
             single_node_callers(callers, limit)
         }
@@ -1448,6 +1457,7 @@ pub(super) async fn handle_callees(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
+    session: Option<&super::SessionState>,
 ) -> Result<ToolResult> {
     let max_depth = args
         .get("max_depth")
@@ -1465,7 +1475,7 @@ pub(super) async fn handle_callees(
         symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
     let (output, touched_files) = match target {
         Target::NodeId(node_id) => {
-            let _target = require_existing_node(cg, &node_id).await?;
+            let _target = require_existing_node(cg, &node_id, session).await?;
             let items = callee_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
             single_node_list("callees", items, limit)
         }

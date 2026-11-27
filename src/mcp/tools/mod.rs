@@ -19,10 +19,12 @@ pub use accounting::{
 };
 pub(crate) use definitions::is_always_load;
 pub use definitions::{
-    ast_grep_available, core_toolset_instructions, get_always_load_tool_definitions,
-    get_installable_tool_definitions, get_listed_tool_definitions, get_tool_definitions,
-    is_graph_scoped_tool, is_hidden_tool, is_read_only_tool, is_selectorless_local_graph_tool,
-    is_tool_area, reachable_tool_name, tool_area, CONTEXT_DESCRIPTION, CORE_TOOLS,
+    ast_grep_available, core_toolset_instructions, disabled_area_message,
+    get_always_load_tool_definitions, get_installable_tool_definitions,
+    get_listed_tool_definitions, get_tool_definitions, is_disabled_tool, is_graph_scoped_tool,
+    is_hidden_tool, is_read_only_tool, is_selectorless_local_graph_tool, is_tool_area,
+    reachable_tool_name, tool_area, without_disabled_references, CrossAreaReference,
+    CONTEXT_DESCRIPTION, CORE_TOOLS, CROSS_AREA_REFERENCES, DISABLED_TOOL_AREAS_SETTING,
     GRAPH_SELECTOR_INSTRUCTIONS, MORE_TOOL, RENAME_DESCRIPTION, TOOL_AREAS,
 };
 pub use definitions::{tool_capability, ToolCapability};

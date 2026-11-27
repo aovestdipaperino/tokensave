@@ -1770,7 +1770,11 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
 
 /// Handles `tokensave_entities` — flat symbol map for a file with optional
 /// `kinds` filter.
-pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+pub(super) async fn handle_outline(
+    cg: &TokenSave,
+    args: Value,
+    session: Option<&super::SessionState>,
+) -> Result<ToolResult> {
     use crate::context::read_modes::render_map;
 
     let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
@@ -1810,13 +1814,16 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
         obj.insert("has_doc".to_string(), json!(!doc_paths.is_empty()));
         if !doc_paths.is_empty() {
             obj.insert("doc_path".to_string(), json!(doc_paths));
-            obj.insert(
-                "doc_hint".to_string(),
-                json!(format!(
-                    "call {} for the summary before reading this file",
-                    crate::mcp::tools::reachable_tool_name("tokensave_doc")
-                )),
-            );
+            // No hint when the session cannot list the tool: `doc_path`
+            // still names the documents.
+            if let Some(tool) = super::reachable_tool(session, "tokensave_doc") {
+                obj.insert(
+                    "doc_hint".to_string(),
+                    json!(format!(
+                        "call {tool} for the summary before reading this file"
+                    )),
+                );
+            }
         }
     }
     let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();

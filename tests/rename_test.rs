@@ -317,10 +317,10 @@ async fn rename_preview_is_a_hidden_dry_run_alias() {
         .any(|d| d.name == "tokensave_rename_preview"));
     for toolset in [Toolset::Full, Toolset::Core] {
         let all: BTreeSet<String> = ["all".to_string()].into();
-        let listed = get_listed_tool_definitions(toolset, &all);
+        let listed = get_listed_tool_definitions(toolset, &all, &BTreeSet::new());
         assert!(listed.iter().all(|d| d.name != "tokensave_rename_preview"));
     }
-    let listed = get_listed_tool_definitions(Toolset::Full, &BTreeSet::new());
+    let listed = get_listed_tool_definitions(Toolset::Full, &BTreeSet::new(), &BTreeSet::new());
     assert!(listed.iter().any(|d| d.name == "tokensave_rename"));
     assert_eq!(tool_area("tokensave_rename"), "edit");
     // Permission lists keep both names, so an allowlisted alias still works.

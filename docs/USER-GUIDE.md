@@ -1868,6 +1868,7 @@ watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
+disabled_tool_areas = []     # tool areas the MCP server never lists, e.g. ["memory"]; see docs/guide/MCP-TOOLS.md
 manage_permissions = true    # false = leave every agent's tool approvals to you
 auto_init = true             # false = never initialize a new git repository unasked (TOKENSAVE_AUTO_INIT overrides)
 ```

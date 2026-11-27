@@ -385,3 +385,172 @@ async fn the_full_instructions_do_not_carry_the_map() {
     assert!(!instructions.contains(MORE_TOOL), "{instructions}");
     assert!(!instructions.contains("tokensave_multi_str_replace"));
 }
+
+fn areas(names: &[&str]) -> Vec<String> {
+    names.iter().map(ToString::to_string).collect()
+}
+
+/// A turned-off area is in no list: not in the instructions, not in the
+/// `tokensave_more` schema, and not in `tools/list` after `all` is listed.
+/// `tokensave_more` refuses the area and names the setting.
+#[tokio::test]
+async fn a_disabled_area_is_not_listed_and_tokensave_more_does_not_offer_it() {
+    let (_dir, server) = setup_server(Some(Toolset::Core)).await;
+    assert_eq!(
+        server.set_disabled_tool_areas(&areas(&["memory"])),
+        Vec::<String>::new()
+    );
+
+    let instructions = initialize_instructions(&server).await;
+    assert!(instructions.contains("git ("), "{instructions}");
+    assert!(!instructions.contains("memory ("), "{instructions}");
+
+    let listed = request(&server, 1, "tools/list", json!({})).await;
+    let more = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == json!(MORE_TOOL))
+        .expect("tokensave_more is listed");
+    let offered = more["inputSchema"]["properties"]["area"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(offered.contains(&json!("git")), "{offered:?}");
+    assert!(!offered.contains(&json!("memory")), "{offered:?}");
+    assert!(!more["description"].as_str().unwrap().contains("memory"));
+
+    let refused = request(
+        &server,
+        2,
+        "tools/call",
+        json!({"name": MORE_TOOL, "arguments": {"area": "memory"}}),
+    )
+    .await;
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+    let message = refused["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        message.starts_with("The \"memory\" tool area is disabled"),
+        "{message}"
+    );
+    assert!(message.contains("disabled_tool_areas"), "{message}");
+
+    let all = request(
+        &server,
+        3,
+        "tools/call",
+        json!({"name": MORE_TOOL, "arguments": {"area": "all"}}),
+    )
+    .await;
+    let text = all["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("tokensave_blame"), "{text}");
+    assert!(!text.contains("tokensave_session_recall"), "{text}");
+
+    let names = listed_tool_names(&server).await;
+    assert!(names.contains(&"tokensave_blame".to_string()));
+    assert!(!names.contains(&MORE_TOOL.to_string()), "nothing is left");
+    for name in &names {
+        assert!(
+            CORE_TOOLS.contains(&name.as_str()) || tool_area(name) != "memory",
+            "{name} must not be listed"
+        );
+    }
+}
+
+/// The full toolset leaves out a turned-off area too.
+#[tokio::test]
+async fn the_full_toolset_does_not_list_a_disabled_area() {
+    let (_dir, server) = setup_server(Some(Toolset::Full)).await;
+    server.set_disabled_tool_areas(&areas(&["memory", "git"]));
+    let names = listed_tool_names(&server).await;
+    assert!(names.contains(&"tokensave_todos".to_string()));
+    assert!(names.contains(&"tokensave_node".to_string()));
+    assert!(!names.contains(&"tokensave_session_recall".to_string()));
+    assert!(!names.contains(&"tokensave_blame".to_string()));
+}
+
+/// A call by name to a tool of a turned-off area does not run. The answer
+/// says in plain words that the tool is disabled. A tool of another area and
+/// a core tool still run, and an unknown name is still an unknown tool.
+#[tokio::test]
+async fn a_call_to_a_tool_of_a_disabled_area_says_that_it_is_disabled() {
+    let (dir, server) = setup_server(None).await;
+    server.set_disabled_tool_areas(&areas(&["edit", "navigate"]));
+    let call_tool = |id: i64, name: &'static str, arguments: Value| {
+        let server = &server;
+        async move {
+            request(
+                server,
+                id,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            )
+            .await
+        }
+    };
+
+    // An edit tool: the refusal must come before any write.
+    assert_eq!(tool_area("tokensave_create_file"), "edit");
+    let refused = call_tool(
+        1,
+        "tokensave_create_file",
+        json!({"path": "src/new.rs", "content": "fn added() {}\n"}),
+    )
+    .await;
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+    let text = refused["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("tokensave_create_file is disabled, so this call did nothing."),
+        "{text}"
+    );
+    assert!(text.contains("\"edit\" tool area"), "{text}");
+    assert!(text.contains("disabled_tool_areas"), "{text}");
+    assert!(!dir.path().join("src").join("new.rs").exists());
+
+    // The catch-all area has no tool list, and is refused the same way.
+    assert_eq!(tool_area("tokensave_node"), "navigate");
+    let refused = call_tool(2, "tokensave_node", json!({"node_id": "x"})).await;
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+
+    // Another area and a core tool are not affected.
+    assert_eq!(tool_area("tokensave_todos"), "analysis");
+    for (id, name) in [(3, "tokensave_todos"), (4, "tokensave_status")] {
+        let response = call_tool(id, name, json!({})).await;
+        assert!(response.get("error").is_none(), "{response}");
+        assert_ne!(response["result"]["isError"], json!(true), "{response}");
+    }
+
+    // A name that is no tool is not reported as a disabled tool.
+    let unknown = call_tool(5, "tokensave_nope", json!({})).await;
+    assert!(!unknown.to_string().contains("is disabled"), "{unknown}");
+}
+
+/// With every area turned off there is nothing more to list: the list is
+/// the core tools, and neither it nor the instructions name `tokensave_more`.
+#[tokio::test]
+async fn every_area_disabled_leaves_only_the_core_tools() {
+    let (_dir, server) = setup_server(None).await;
+    let every: Vec<String> = tokensave::mcp::tools::TOOL_AREAS
+        .iter()
+        .map(|(area, _, _)| (*area).to_string())
+        .collect();
+    server.set_disabled_tool_areas(&every);
+    let mut names = listed_tool_names(&server).await;
+    names.sort();
+    let mut core: Vec<String> = CORE_TOOLS.iter().map(ToString::to_string).collect();
+    core.sort();
+    assert_eq!(names, core);
+    let instructions = initialize_instructions(&server).await;
+    assert!(!instructions.contains(MORE_TOOL), "{instructions}");
+}
+
+/// A name that is not an area is returned, not applied. Case and spaces
+/// around a name do not matter.
+#[tokio::test]
+async fn a_name_that_is_no_area_is_reported_and_ignored() {
+    let (_dir, server) = setup_server(None).await;
+    let unknown = server.set_disabled_tool_areas(&areas(&[" Memory ", "nope", "all"]));
+    assert_eq!(unknown, ["nope", "all"]);
+    let instructions = initialize_instructions(&server).await;
+    assert!(!instructions.contains("memory ("), "{instructions}");
+    assert!(instructions.contains("git ("), "{instructions}");
+}

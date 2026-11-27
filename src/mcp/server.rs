@@ -28,10 +28,11 @@ use super::graph_scope::{
     FEDERATABLE_TOOLS,
 };
 use super::tools::{
-    baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
-    handle_tool_call_with_session, is_always_load, is_graph_scoped_tool, is_hidden_tool,
-    is_read_only_tool, is_selectorless_local_graph_tool, is_tool_area, request_overhead_tokens,
-    schema_overhead_tokens, settle_session_debt, tool_area, SessionState, CORE_TOOLS, MORE_TOOL,
+    baseline_policy, cap_baseline, disabled_area_message, get_listed_tool_definitions,
+    get_tool_definitions, handle_tool_call_with_session, is_always_load, is_disabled_tool,
+    is_graph_scoped_tool, is_hidden_tool, is_read_only_tool, is_selectorless_local_graph_tool,
+    is_tool_area, request_overhead_tokens, schema_overhead_tokens, settle_session_debt, tool_area,
+    without_disabled_references, SessionState, CORE_TOOLS, DISABLED_TOOL_AREAS_SETTING, MORE_TOOL,
     TOOL_AREAS,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
@@ -1180,6 +1181,29 @@ impl McpServer {
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
     pub fn scope_prefix(&self) -> Option<&str> {
         self.scope_prefix.as_deref()
+    }
+
+    /// Sets the tool areas that this server never lists, from the
+    /// `disabled_tool_areas` user setting. Returns the names that are not an
+    /// area in [`TOOL_AREAS`]; the server ignores them.
+    ///
+    /// A tool of a turned-off area does not run: a call by name gets
+    /// [`disabled_area_message`] and no other effect. Tool results, tool descriptions, the instructions and the
+    /// schema resource do not send the agent to such a tool. Call this before the client connects, because the server
+    /// sends no `list_changed` notification for it.
+    pub fn set_disabled_tool_areas(&self, areas: &[String]) -> Vec<String> {
+        let (known, unknown): (Vec<String>, Vec<String>) = areas
+            .iter()
+            .map(|area| area.trim().to_ascii_lowercase())
+            .partition(|area| TOOL_AREAS.iter().any(|(name, _, _)| name == area));
+        self.session_state
+            .set_disabled_tool_areas(known.into_iter().collect());
+        unknown
+    }
+
+    /// The tool areas that the user turned off.
+    fn disabled_areas(&self) -> std::collections::BTreeSet<String> {
+        self.session_state.disabled_tool_areas()
     }
 
     /// Enables or disables per-call timing reporting. When enabled, every
@@ -2832,6 +2856,7 @@ impl McpServer {
                     self.served_projects(),
                     self.toolset(),
                     crate::caveman::cooperation_enabled(self.served_root()),
+                    &self.disabled_areas(),
                 ))
             }
             "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
@@ -2883,6 +2908,8 @@ impl McpServer {
     /// `caveman_cooperation` appends [`crate::caveman::COOPERATION_INSTRUCTIONS`]
     /// (#797). It is off unless the user opted in and a Caveman skill was
     /// found, so the default instructions are unchanged.
+    ///
+    /// The map of the core toolset leaves out each area in `disabled_areas`.
     fn handle_initialize(
         id: Value,
         params: Option<&Value>,
@@ -2890,6 +2917,7 @@ impl McpServer {
         projects: ServedProjects<'_>,
         toolset: crate::config::Toolset,
         caveman_cooperation: bool,
+        disabled_areas: &std::collections::BTreeSet<String>,
     ) -> JsonRpcResponse {
         const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
             Start with tokensave_context for any code exploration task \
@@ -2908,7 +2936,7 @@ impl McpServer {
             " When a tool result contains a `tokensave_metrics:` line, \
              report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
 
-        let mut instructions = BASE_INSTRUCTIONS.to_string();
+        let mut instructions = without_disabled_references(BASE_INSTRUCTIONS, disabled_areas);
         // #576: the cross-project rules are sent here once per session. The
         // `graph_root` description, which a client sends once per tool on
         // every turn, keeps only one sentence.
@@ -2949,7 +2977,9 @@ impl McpServer {
         // toolset never changes, and its handshake stays as it was.
         let core = toolset == crate::config::Toolset::Core;
         if core {
-            instructions.push_str(&crate::mcp::tools::core_toolset_instructions());
+            instructions.push_str(&crate::mcp::tools::core_toolset_instructions(
+                disabled_areas,
+            ));
         }
 
         JsonRpcResponse::success(
@@ -2979,12 +3009,25 @@ impl McpServer {
             .lock()
             .map(|areas| areas.clone())
             .unwrap_or_default();
-        let tools = get_listed_tool_definitions(self.toolset(), &revealed);
+        let tools = get_listed_tool_definitions(self.toolset(), &revealed, &self.disabled_areas());
         // Marks the schema as actually delivered so `handle_tools_call` knows
         // it's fair to debit `schema_overhead_tokens` against this session —
         // see `schema_served`.
         self.schema_served.store(true, Ordering::Relaxed);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
+    }
+
+    /// The answer to a call that the user turned off with
+    /// `disabled_tool_areas`: a tool result marked `isError`, so the agent
+    /// reads why the call did nothing.
+    fn disabled_area_result(id: Value, area: &str, tool: Option<&str>) -> JsonRpcResponse {
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "content": [{ "type": "text", "text": disabled_area_message(area, tool) }],
+                "isError": true
+            }),
+        )
     }
 
     /// Handles `tokensave_more` (#576): lists one more tool area from now on.
@@ -2995,8 +3038,16 @@ impl McpServer {
     /// fetches `tools/list` again.
     fn handle_more(&self, id: Value, arguments: &Value) -> JsonRpcResponse {
         let area = arguments.get("area").and_then(Value::as_str).unwrap_or("");
+        let disabled = self.disabled_areas();
+        if disabled.contains(area) {
+            return Self::disabled_area_result(id, area, None);
+        }
         if !is_tool_area(area) {
-            let names: Vec<&str> = TOOL_AREAS.iter().map(|(name, _, _)| *name).collect();
+            let names: Vec<&str> = TOOL_AREAS
+                .iter()
+                .map(|(name, _, _)| *name)
+                .filter(|name| !disabled.contains(*name))
+                .collect();
             return JsonRpcResponse::error(
                 id,
                 ErrorCode::InvalidParams,
@@ -3023,6 +3074,7 @@ impl McpServer {
                 .filter(|definition| !is_hidden_tool(definition))
                 .map(|definition| definition.name)
                 .filter(|name| !CORE_TOOLS.contains(&name.as_str()))
+                .filter(|name| !is_disabled_tool(name, &disabled))
                 .filter(|name| area == "all" || tool_area(name) == area)
                 .collect();
             format!("Listed from now on ({area}): {}", names.join(", "))
@@ -3084,7 +3136,7 @@ impl McpServer {
         };
 
         if uri == "tokensave://schema" {
-            return Self::read_resource_schema(id);
+            return Self::read_resource_schema(id, &self.disabled_areas());
         }
         // Every other resource describes the default project (#606).
         let Some(cg) = self.cg.as_ref() else {
@@ -3116,14 +3168,19 @@ impl McpServer {
 
     /// Returns the `SQLite` schema documentation as a markdown resource.
     /// Sourced from `src/db/migrations.rs::create_schema` — keep in sync.
-    fn read_resource_schema(id: Value) -> JsonRpcResponse {
+    ///
+    /// The text leaves out its references to the tools of `disabled_areas`.
+    fn read_resource_schema(
+        id: Value,
+        disabled_areas: &std::collections::BTreeSet<String>,
+    ) -> JsonRpcResponse {
         JsonRpcResponse::success(
             id,
             json!({
                 "contents": [{
                     "uri": "tokensave://schema",
                     "mimeType": "text/markdown",
-                    "text": SCHEMA_MARKDOWN
+                    "text": without_disabled_references(SCHEMA_MARKDOWN, disabled_areas)
                 }]
             }),
         )
@@ -3403,6 +3460,19 @@ impl McpServer {
 
         if tool_name == MORE_TOOL {
             return self.handle_more(id, &arguments);
+        }
+
+        // A tool of a turned-off area does not run. The check is before
+        // selector validation, freshness work and dispatch, so the call has
+        // no effect on any graph.
+        // The area of an unknown name is the catch-all area, so the name must
+        // be a tool before the call is reported as disabled.
+        if is_disabled_tool(tool_name, &self.disabled_areas())
+            && get_tool_definitions()
+                .iter()
+                .any(|definition| definition.name == tool_name)
+        {
+            return Self::disabled_area_result(id, tool_area(tool_name), Some(tool_name));
         }
 
         let has_selector = arguments.as_object().is_some_and(|object| {
@@ -4465,7 +4535,7 @@ mod default_footprint_tests {
     /// on every host.
     fn default_footprint_bytes() -> usize {
         let toolset = crate::config::Toolset::default();
-        let tools = get_listed_tool_definitions(toolset, &BTreeSet::new());
+        let tools = get_listed_tool_definitions(toolset, &BTreeSet::new(), &BTreeSet::new());
         let tools_list = json!({ "tools": tools }).to_string();
         let initialize = McpServer::handle_initialize(
             json!(1),
@@ -4474,6 +4544,7 @@ mod default_footprint_tests {
             ServedProjects::Default { siblings: &[] },
             toolset,
             false,
+            &BTreeSet::new(),
         );
         let instructions = initialize
             .result
@@ -4483,6 +4554,132 @@ mod default_footprint_tests {
             .unwrap_or_default();
         assert!(!instructions.is_empty(), "initialize sent no instructions");
         tools_list.len() + instructions.len()
+    }
+
+    /// The names of the tools that `text` mentions.
+    fn tool_names_in(text: &str) -> Vec<String> {
+        const PREFIX: &str = "tokensave_";
+        let known: Vec<String> = get_tool_definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        text.match_indices(PREFIX)
+            .map(|(start, _)| {
+                text[start..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|name| known.contains(name))
+            .collect()
+    }
+
+    fn initialize_instructions(
+        toolset: crate::config::Toolset,
+        disabled: &BTreeSet<String>,
+    ) -> String {
+        McpServer::handle_initialize(
+            json!(1),
+            None,
+            false,
+            ServedProjects::Default { siblings: &[] },
+            toolset,
+            false,
+            disabled,
+        )
+        .result
+        .as_ref()
+        .and_then(|result| result.get("instructions"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default()
+    }
+
+    fn schema_resource(disabled: &BTreeSet<String>) -> String {
+        McpServer::read_resource_schema(json!(1), disabled)
+            .result
+            .as_ref()
+            .and_then(|result| result.pointer("/contents/0/text"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default()
+    }
+
+    /// For every set of turned-off areas, no text that the server sends to
+    /// the agent names a tool of a turned-off area: not a listed tool
+    /// definition, not the instructions, not the schema resource.
+    #[test]
+    fn no_listed_text_names_a_tool_of_a_disabled_area() {
+        use crate::config::Toolset;
+        let everything = BTreeSet::from(["all".to_string()]);
+        for mask in 0..(1_usize << TOOL_AREAS.len()) {
+            let disabled: BTreeSet<String> = TOOL_AREAS
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, (area, _, _))| (*area).to_string())
+                .collect();
+            let mut texts = vec![
+                ("schema resource".to_string(), schema_resource(&disabled)),
+                (
+                    "core instructions".to_string(),
+                    initialize_instructions(Toolset::Core, &disabled),
+                ),
+                (
+                    "full instructions".to_string(),
+                    initialize_instructions(Toolset::Full, &disabled),
+                ),
+            ];
+            for toolset in [Toolset::Core, Toolset::Full] {
+                for revealed in [BTreeSet::new(), everything.clone()] {
+                    for definition in get_listed_tool_definitions(toolset, &revealed, &disabled) {
+                        texts.push((
+                            definition.name.clone(),
+                            serde_json::to_string(&definition).unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
+            for (source, text) in &texts {
+                assert!(!text.is_empty(), "{source} is empty");
+                for name in tool_names_in(text) {
+                    assert!(
+                        !is_disabled_tool(&name, &disabled),
+                        "{source} names {name} with {disabled:?} turned off"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each cross-area reference guards text that still exists, and changes
+    /// nothing while its area is on.
+    #[test]
+    fn each_cross_area_reference_matches_the_text_it_guards() {
+        use crate::config::Toolset;
+        let none = BTreeSet::new();
+        let mut all_text = schema_resource(&none);
+        all_text.push_str(&initialize_instructions(Toolset::Core, &none));
+        for definition in get_tool_definitions() {
+            all_text.push_str(&definition.description);
+        }
+        assert_eq!(schema_resource(&none), SCHEMA_MARKDOWN);
+        for reference in crate::mcp::tools::CROSS_AREA_REFERENCES {
+            assert!(
+                all_text.contains(reference.with),
+                "no text has {:?}; update CROSS_AREA_REFERENCES",
+                reference.with
+            );
+            assert!(
+                TOOL_AREAS
+                    .iter()
+                    .any(|(area, _, _)| *area == reference.area),
+                "{} is not an area",
+                reference.area
+            );
+        }
+        let memory = BTreeSet::from(["memory".to_string()]);
+        assert!(initialize_instructions(Toolset::Core, &memory).contains("Edit tools can mutate"));
     }
 
     /// #797: the Caveman sentence appears only when cooperation is on, and
@@ -4497,6 +4694,7 @@ mod default_footprint_tests {
                 ServedProjects::Default { siblings: &[] },
                 crate::config::Toolset::default(),
                 cooperate,
+                &BTreeSet::new(),
             )
             .result
             .as_ref()
