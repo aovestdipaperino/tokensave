@@ -1723,17 +1723,19 @@ fn test_claude_event_cwd_activates_the_guardrail() {
     let (_tmp, root) = indexed_project();
     let input = serde_json::json!({
         "cwd": root.to_string_lossy(),
+        "hook_event_name": "PreToolUse",
         "tool_name": "Grep",
         "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"},
     })
     .to_string();
-    assert!(
-        is_blocked(&evaluate_claude_pre_tool_use_with_env(
-            &input,
-            &env_not_indexed()
-        )),
-        "Claude's event cwd should decide the project too"
-    );
+    let output = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
+    let decision: serde_json::Value = serde_json::from_str(&output).expect("hook advice");
+    assert!(decision.get("permission").is_none());
+    let hook_output = &decision["hookSpecificOutput"];
+    assert!(hook_output.get("permissionDecision").is_none());
+    let advice = hook_output["additionalContext"].as_str().expect("advice");
+    assert!(advice.contains("native Grep results"));
+    assert!(advice.contains("tokensave_search"));
 }
 
 #[test]
@@ -2246,6 +2248,27 @@ async fn grep_denial_distinguishes_definitions_from_text_references() {
             "output_mode": "content",
         });
         assert!(evaluate_hook_decision_with_env(&input.to_string(), &env).is_empty());
+    }
+}
+
+#[test]
+fn indexed_namesake_does_not_redirect_csharp_namespace_search() {
+    let (_tmp, root) = indexed_project_with_nodes(&["namespace", "HandleRequest"]);
+    let env = env_rooted_at(&root);
+    for (pattern, path, redirect) in [
+        ("namespace", "src/Example.cs", false),
+        ("namespace", "src/example.py", true),
+        ("HandleRequest", "src/Example.cs", true),
+    ] {
+        let args = serde_json::json!({
+            "pattern": pattern, "path": path, "output_mode": "content",
+        });
+        let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+        if redirect {
+            assert!(is_blocked(&result), "{pattern} in {path}: {result}");
+        } else {
+            assert!(result.is_empty(), "{pattern} in {path}: {result}");
+        }
     }
 }
 
