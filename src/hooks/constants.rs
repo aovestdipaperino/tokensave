@@ -180,3 +180,8 @@ pub(super) const CSHARP_SEARCH_KEYWORDS: &[&str] = &[
 pub(super) const CSHARP_SEARCH_TYPES: &[&str] = &["cs", "csharp"];
 
 pub(super) const CSHARP_NAMESPACE_KEYWORD: &str = "namespace";
+
+pub(super) const POWERSHELL_MAX_COMMAND_BYTES: usize = 8 * 1024;
+pub(super) const POWERSHELL_SEARCH_NAMES: &[&str] = &["Select-String", "sls"];
+pub(super) const POWERSHELL_SHELL_NAMES: &[&str] =
+    &["powershell", "powershell.exe", "pwsh", "pwsh.exe"];

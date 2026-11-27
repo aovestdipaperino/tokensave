@@ -123,6 +123,8 @@ For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md
 
 ### PreToolUse hook
 
+The Codex pre-tool hook parses PowerShell commands in-process when the shell is identified as Windows PowerShell or pwsh. On Windows it also checks shell commands that omit the shell name. A standalone `Select-String` or `sls` with a literal pattern and an existing path inside the indexed project can get advisory context identifying the search's UTF-8 byte range, including when it is a separate statement in a compound command. Pipelines, conditional chains, nested groups, dynamic arguments and parse errors receive no PowerShell advice. The hook leaves execution and permissions to the host.
+
 The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, provides guidance for eligible Grep searches, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
 
 An Agent call with an explicit non-Explore `subagent_type` always passes. An untyped Agent call is redirected only when its prompt reads as code research. Code-specific phrases such as "call graph", "callers of" or "codebase structure" are enough on their own. Generic phrases such as "explore", "read every" or "full contents" also need a code word in the prompt ("code", "source", "src", "repo", "function", "class", "module" and similar), so an agent that reads plain-text or OCR files is not blocked.
