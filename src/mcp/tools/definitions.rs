@@ -467,6 +467,25 @@ pub const CORE_TOOLS: &[&str] = &[
 /// The tool that lists more tools when the core toolset is active (#576).
 pub const MORE_TOOL: &str = "tokensave_more";
 
+/// The user setting that names the tool areas the server never lists. The
+/// serde field `UserConfig::disabled_tool_areas` has the same name.
+pub const DISABLED_TOOL_AREAS_SETTING: &str = "disabled_tool_areas";
+
+/// What a call gets when the user turned off `area`: plain words for the
+/// agent, with the setting name for the user. `tool` is the tool that was
+/// called, or `None` when [`MORE_TOOL`] was asked to list the area.
+pub fn disabled_area_message(area: &str, tool: Option<&str>) -> String {
+    let subject = tool.map_or_else(
+        || format!("The \"{area}\" tool area is disabled, so its tools are not listed."),
+        |tool| format!("{tool} is disabled, so this call did nothing."),
+    );
+    format!(
+        "{subject} The user turned off the \"{area}\" tool area of tokensave \
+         (`{DISABLED_TOOL_AREAS_SETTING}` in the tokensave user configuration). Its tools do \
+         not run in this session. Do not call them again; use a different tool for this task."
+    )
+}
+
 /// The areas that [`MORE_TOOL`] can list: name, summary, tools.
 ///
 /// The last area has no tool list. It is the catch-all: a tool that is not in
@@ -572,14 +591,134 @@ pub fn tool_area(name: &str) -> &'static str {
 /// A tool name for a hint in a tool result, with how to list it when the core
 /// toolset hides it (#576): `tokensave_doc (via tokensave_more area
 /// "navigate" if not listed)`. A core tool is returned as is.
-pub fn reachable_tool_name(name: &str) -> String {
+///
+/// Returns `None` when the area of the tool is in `disabled_areas`. The agent
+/// cannot list that tool, so the caller must write its text without the hint.
+pub fn reachable_tool_name(
+    name: &str,
+    disabled_areas: &std::collections::BTreeSet<String>,
+) -> Option<String> {
     if CORE_TOOLS.contains(&name) {
-        return name.to_string();
+        return Some(name.to_string());
     }
-    format!(
+    if is_disabled_tool(name, disabled_areas) {
+        return None;
+    }
+    Some(format!(
         "{name} (via {MORE_TOOL} area \"{}\" if not listed)",
         tool_area(name)
-    )
+    ))
+}
+
+/// Text that names a tool of another area, and the text that replaces it when
+/// the user turned that area off.
+///
+/// A tool description, the server instructions and the schema resource are
+/// fixed text. Each place in them that sends the agent to a tool of another
+/// area has an entry here, so that the agent is never sent to a tool that it
+/// cannot list. A test fails when `with` is no longer in the text it guards,
+/// and when a listed text names a tool of a turned-off area.
+pub struct CrossAreaReference {
+    /// The area of the tool that `with` names.
+    pub area: &'static str,
+    /// The text as written.
+    pub with: &'static str,
+    /// The text to use when `area` is turned off.
+    pub without: &'static str,
+}
+
+/// Every [`CrossAreaReference`] of the server.
+pub const CROSS_AREA_REFERENCES: &[CrossAreaReference] = &[
+    // The `tokensave_imports` description.
+    CrossAreaReference {
+        area: "analysis",
+        with: "Unlike tokensave_circular (which works on files via symbol edges), this groups",
+        without: "This groups",
+    },
+    // The `tokensave_run_affected_tests` description.
+    CrossAreaReference {
+        area: "analysis",
+        with: "Closes the loop opened by `tokensave_test_map` / `tokensave_test_risk` — emits",
+        without: "Emits",
+    },
+    // The `tokensave://schema` resource.
+    CrossAreaReference {
+        area: "memory",
+        with: "Hand-recorded notes from `tokensave_record_decision` / \
+               `tokensave_record_code_area`. ",
+        without: "",
+    },
+    CrossAreaReference {
+        area: "git",
+        with: " — `tokensave_affected` does this with extra git plumbing",
+        without: "",
+    },
+    CrossAreaReference {
+        area: "navigate",
+        with: " (or `tokensave_by_qualified_name`)",
+        without: "",
+    },
+    // The `initialize` instructions.
+    CrossAreaReference {
+        area: "memory",
+        with: "Edit and session-memory tools can mutate",
+        without: "Edit tools can mutate",
+    },
+];
+
+/// Returns `text` without its references to the tools of `disabled_areas`
+/// (see [`CROSS_AREA_REFERENCES`]).
+pub fn without_disabled_references(
+    text: &str,
+    disabled_areas: &std::collections::BTreeSet<String>,
+) -> String {
+    let mut text = text.to_string();
+    for reference in CROSS_AREA_REFERENCES {
+        if disabled_areas.contains(reference.area) {
+            text = text.replace(reference.with, reference.without);
+        }
+    }
+    text
+}
+
+/// The name and summary of each area in [`TOOL_AREAS`] that is not in
+/// `disabled_areas`.
+fn enabled_tool_areas(
+    disabled_areas: &std::collections::BTreeSet<String>,
+) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+    TOOL_AREAS
+        .iter()
+        .filter(|(area, _, _)| !disabled_areas.contains(*area))
+        .map(|(area, summary, _)| (*area, *summary))
+}
+
+/// True when the user turned off the area of the tool `name`. A core tool has
+/// no area, so it is never turned off.
+pub fn is_disabled_tool(name: &str, disabled_areas: &std::collections::BTreeSet<String>) -> bool {
+    !CORE_TOOLS.contains(&name) && disabled_areas.contains(tool_area(name))
+}
+
+/// Splits the values of the `disabled_tool_areas` setting into the areas of
+/// [`TOOL_AREAS`] that they name and the values that name no area. Case and
+/// spaces around a value do not matter.
+pub fn partition_tool_areas(
+    configured: &[String],
+) -> (std::collections::BTreeSet<String>, Vec<String>) {
+    let (known, unknown): (Vec<String>, Vec<String>) = configured
+        .iter()
+        .map(|area| area.trim().to_ascii_lowercase())
+        .partition(|area| TOOL_AREAS.iter().any(|(name, _, _)| name == area));
+    (known.into_iter().collect(), unknown)
+}
+
+/// The names of the tools in `area`, as `tools/list` can list them.
+pub fn tools_in_area(area: &str) -> Vec<String> {
+    get_tool_definitions()
+        .into_iter()
+        .filter(|d| !is_hidden_tool(d))
+        .map(|d| d.name)
+        .filter(|name| !CORE_TOOLS.contains(&name.as_str()) && tool_area(name) == area)
+        .collect()
 }
 
 /// True when `area` is `"all"` or the name of an entry in [`TOOL_AREAS`].
@@ -594,27 +733,36 @@ pub fn is_tool_area(area: &str) -> bool {
 /// instructions before any schema, so this map is how a session learns that a
 /// tool it was told to use, such as `tokensave_node`, is one call away. It is
 /// sent once per session, not once per turn.
-pub fn core_toolset_instructions() -> String {
+///
+/// The map leaves out each area in `disabled_areas`. When every area is
+/// turned off there is nothing more to list, and the sentence names only the
+/// core tools.
+pub fn core_toolset_instructions(disabled_areas: &std::collections::BTreeSet<String>) -> String {
     use std::fmt::Write;
     let mut text = format!(
-        " Only the core tools are listed: {}. To list more, call {MORE_TOOL} with an area:",
+        " Only the core tools are listed: {}.",
         CORE_TOOLS.join(", ")
     );
-    for (area, summary, _) in TOOL_AREAS {
+    let mut areas = enabled_tool_areas(disabled_areas).peekable();
+    if areas.peek().is_none() {
+        return text;
+    }
+    let _ = write!(text, " To list more, call {MORE_TOOL} with an area:");
+    for (area, summary) in areas {
         let _ = write!(text, " {area} ({summary}),");
     }
     text.push_str(" or all.");
     text
 }
 
-fn def_more() -> ToolDefinition {
+fn def_more(disabled_areas: &std::collections::BTreeSet<String>) -> ToolDefinition {
     use std::fmt::Write;
     let mut description = "List more tokensave tools. Only the core tools are listed at the \
                            start, to keep the tool schemas small. Call this with an area, and \
                            the tools of that area are listed from then on. Areas:"
         .to_string();
     let mut areas: Vec<&str> = Vec::new();
-    for (area, summary, _) in TOOL_AREAS {
+    for (area, summary) in enabled_tool_areas(disabled_areas) {
         let _ = write!(description, "\n• {area} — {summary}");
         areas.push(area);
     }
@@ -641,7 +789,7 @@ fn def_more() -> ToolDefinition {
 /// permission list without it prompts on the first call that lists more tools.
 pub fn get_installable_tool_definitions() -> Vec<ToolDefinition> {
     let mut definitions = get_tool_definitions();
-    definitions.push(def_more());
+    definitions.push(def_more(&std::collections::BTreeSet::new()));
     definitions
 }
 
@@ -654,24 +802,33 @@ pub fn get_installable_tool_definitions() -> Vec<ToolDefinition> {
 /// With [`Toolset::Core`](crate::config::Toolset::Core) the list is the core
 /// tools, the tools of each area in `revealed_areas`, and [`MORE_TOOL`] while
 /// an area is still hidden.
+///
+/// No toolset lists a tool of an area in `disabled_areas`, and [`MORE_TOOL`]
+/// does not offer that area. The server also refuses a call to such a tool
+/// (see [`disabled_area_message`]).
 pub fn get_listed_tool_definitions(
     toolset: crate::config::Toolset,
     revealed_areas: &std::collections::BTreeSet<String>,
+    disabled_areas: &std::collections::BTreeSet<String>,
 ) -> Vec<ToolDefinition> {
     let mut definitions = get_tool_definitions();
-    definitions.retain(|d| !is_hidden_tool(d));
+    definitions.retain(|d| !is_hidden_tool(d) && !is_disabled_tool(&d.name, disabled_areas));
+    if !disabled_areas.is_empty() {
+        for definition in &mut definitions {
+            definition.description =
+                without_disabled_references(&definition.description, disabled_areas);
+        }
+    }
     if toolset == crate::config::Toolset::Full {
         return definitions;
     }
     let all = revealed_areas.contains("all")
-        || TOOL_AREAS
-            .iter()
-            .all(|(area, _, _)| revealed_areas.contains(*area));
+        || enabled_tool_areas(disabled_areas).all(|(area, _)| revealed_areas.contains(area));
     if !all {
         definitions.retain(|d| {
             CORE_TOOLS.contains(&d.name.as_str()) || revealed_areas.contains(tool_area(&d.name))
         });
-        definitions.push(def_more());
+        definitions.push(def_more(disabled_areas));
     }
     definitions
 }
@@ -3536,15 +3693,25 @@ mod tests {
     /// needs no such note.
     #[test]
     fn a_hint_names_the_area_that_lists_a_hidden_tool() {
+        use std::collections::BTreeSet;
+        let none = BTreeSet::new();
         assert_eq!(
-            reachable_tool_name("tokensave_doc"),
-            "tokensave_doc (via tokensave_more area \"navigate\" if not listed)"
+            reachable_tool_name("tokensave_doc", &none).as_deref(),
+            Some("tokensave_doc (via tokensave_more area \"navigate\" if not listed)")
         );
         assert_eq!(
-            reachable_tool_name("tokensave_blame"),
-            "tokensave_blame (via tokensave_more area \"git\" if not listed)"
+            reachable_tool_name("tokensave_blame", &none).as_deref(),
+            Some("tokensave_blame (via tokensave_more area \"git\" if not listed)")
         );
-        assert_eq!(reachable_tool_name("tokensave_search"), "tokensave_search");
+        assert_eq!(
+            reachable_tool_name("tokensave_search", &none).as_deref(),
+            Some("tokensave_search")
+        );
+        // A turned-off area has no hint: the agent cannot list the tool.
+        let git = BTreeSet::from(["git".to_string()]);
+        assert_eq!(reachable_tool_name("tokensave_blame", &git), None);
+        assert!(reachable_tool_name("tokensave_doc", &git).is_some());
+        assert!(reachable_tool_name("tokensave_search", &git).is_some());
     }
 
     /// #576: the core toolset lists exactly `CORE_TOOLS`, every name in it is a
@@ -3557,7 +3724,7 @@ mod tests {
             assert!(all.iter().any(|d| d.name == *name), "{name} is not a tool");
         }
         let none = std::collections::BTreeSet::new();
-        let core = get_listed_tool_definitions(Toolset::Core, &none);
+        let core = get_listed_tool_definitions(Toolset::Core, &none, &none);
         assert_eq!(core.len(), CORE_TOOLS.len() + 1);
         assert!(core
             .iter()
@@ -3574,7 +3741,7 @@ mod tests {
         let listed = all.iter().filter(|d| !is_hidden_tool(d)).count();
         assert!(listed < all.len());
         assert_eq!(
-            get_listed_tool_definitions(Toolset::Full, &none).len(),
+            get_listed_tool_definitions(Toolset::Full, &none, &none).len(),
             listed
         );
     }
@@ -3596,7 +3763,7 @@ mod tests {
         assert!(!is_read_only_tool(&definition));
         let listed = |areas: &[&str]| {
             let areas: BTreeSet<String> = areas.iter().map(|a| (*a).to_string()).collect();
-            get_listed_tool_definitions(Toolset::Core, &areas)
+            get_listed_tool_definitions(Toolset::Core, &areas, &BTreeSet::new())
                 .iter()
                 .any(|d| d.name == NAME)
         };
@@ -3636,7 +3803,7 @@ mod tests {
         let mut total = CORE_TOOLS.len();
         for (area, _, _) in TOOL_AREAS {
             let one = BTreeSet::from([(*area).to_string()]);
-            let listed = get_listed_tool_definitions(Toolset::Core, &one);
+            let listed = get_listed_tool_definitions(Toolset::Core, &one, &BTreeSet::new());
             assert!(listed.iter().any(|d| d.name == MORE_TOOL));
             total += listed.len() - CORE_TOOLS.len() - 1;
         }
@@ -3644,9 +3811,78 @@ mod tests {
         assert_eq!(total, listable, "the areas must reach every tool once");
 
         let everything = BTreeSet::from(["all".to_string()]);
-        let listed = get_listed_tool_definitions(Toolset::Core, &everything);
+        let listed = get_listed_tool_definitions(Toolset::Core, &everything, &BTreeSet::new());
         assert_eq!(listed.len(), listable);
         assert!(listed.iter().all(|d| d.name != MORE_TOOL));
+    }
+
+    /// For every set of turned-off areas, every set of listed areas and both
+    /// toolsets: each core tool is listed, no tool of a turned-off area is
+    /// listed, and `MORE_TOOL` is listed only while it can still list an area,
+    /// and then offers only areas that are not turned off.
+    #[test]
+    fn no_toolset_lists_a_tool_of_a_disabled_area() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        let subset = |mask: usize| -> BTreeSet<String> {
+            TOOL_AREAS
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, (area, _, _))| (*area).to_string())
+                .collect()
+        };
+        let subsets = 1 << TOOL_AREAS.len();
+        for disabled_mask in 0..subsets {
+            let disabled = subset(disabled_mask);
+            for revealed_mask in 0..=subsets {
+                let revealed = if revealed_mask == subsets {
+                    BTreeSet::from(["all".to_string()])
+                } else {
+                    subset(revealed_mask)
+                };
+                for toolset in [Toolset::Core, Toolset::Full] {
+                    let listed = get_listed_tool_definitions(toolset, &revealed, &disabled);
+                    let case = format!("{toolset:?} revealed {revealed:?} disabled {disabled:?}");
+                    for name in CORE_TOOLS {
+                        assert!(listed.iter().any(|d| d.name == *name), "{name}: {case}");
+                    }
+                    for definition in &listed {
+                        assert!(
+                            definition.name == MORE_TOOL
+                                || !is_disabled_tool(&definition.name, &disabled),
+                            "{}: {case}",
+                            definition.name
+                        );
+                    }
+                    let Some(more) = listed.iter().find(|d| d.name == MORE_TOOL) else {
+                        continue;
+                    };
+                    assert_eq!(toolset, Toolset::Core, "{case}");
+                    let offered: Vec<&str> = more.input_schema["properties"]["area"]["enum"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect();
+                    assert!(offered.len() > 1, "only `all` is left: {case}");
+                    for area in &offered {
+                        assert!(!disabled.contains(*area), "{area}: {case}");
+                    }
+                }
+            }
+        }
+        // No area turned off is the list as it was before the setting.
+        let none = BTreeSet::new();
+        assert_eq!(core_toolset_instructions(&none).matches(" (").count(), {
+            TOOL_AREAS.len()
+        });
+        let every = subset(subsets - 1);
+        assert!(!core_toolset_instructions(&every).contains(MORE_TOOL));
+        assert_eq!(
+            get_listed_tool_definitions(Toolset::Core, &none, &every).len(),
+            CORE_TOOLS.len()
+        );
     }
 
     /// #576: the selector docs are copied into every graph-scoped schema, so

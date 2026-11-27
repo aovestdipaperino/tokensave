@@ -202,6 +202,14 @@ See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent g
 
 `tokensave init` reports an installed Caveman skill and, while the setting is off, how to turn it on; it never changes the setting. See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
 
+## Settings for the listed tools
+
+| Setting | Where | Effect |
+|---|---|---|
+| `disabled_tool_areas` | `~/.tokensave/config.toml` | Empty (default): no tool area is turned off. A list of area names (`analysis`, `edit`, `git`, `memory`, `navigate`), such as `["memory"]`: the MCP server lists no tool of those areas and `tokensave_more` does not offer them. A call to such a tool does not run and answers that the tool is disabled. Read when the MCP server starts. |
+
+See [MCP tools](MCP-TOOLS.md) for the areas and the toolset setting.
+
 ## Settings for the state location
 
 | Setting | Where | Effect |

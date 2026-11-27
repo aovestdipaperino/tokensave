@@ -530,6 +530,8 @@ tokensave measures the tokens it saves on every MCP tool call. Each tool respons
 
 With the core toolset the server also lists `tokensave_more`. A call with an `area` (`analysis`, `edit`, `git`, `memory`, `navigate` or `all`) lists the tools of that area for the rest of the session, and the server sends `notifications/tools/list_changed` so the client fetches the list again. A session pays only for the areas it uses: the `git` area adds about 6 KB. A client that ignores `list_changed` keeps the core list. `tokensave install` grants `tokensave_more` along with every other tool, so it does not prompt; an install from before this release prompts once, until `tokensave reinstall` or the upgrade resync refreshes the permission list.
 
+To keep a whole area out of every list, for example when another MCP server already supplies those tools, set `disabled_tool_areas` in `~/.tokensave/config.toml`; see [MCP tools](docs/guide/MCP-TOOLS.md).
+
 ### Cost observability
 
 ```bash

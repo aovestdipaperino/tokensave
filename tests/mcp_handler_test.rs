@@ -7791,3 +7791,78 @@ async fn create_file_bounds_content_by_max_file_size() {
         .contains("max_file_size"));
     assert!(!dir.path().join("big.txt").exists());
 }
+
+/// A session with `areas` turned off, as `disabled_tool_areas` sets it.
+fn session_with_disabled_areas(areas: &[&str]) -> tokensave::mcp::SessionState {
+    let session = tokensave::mcp::SessionState::new();
+    session.set_disabled_tool_areas(areas.iter().map(ToString::to_string).collect());
+    session
+}
+
+/// The node-not-found error of a core tool sends the agent to
+/// `tokensave_callers_for` only while its area is on. With the area turned
+/// off the agent cannot list that tool, so the error names only
+/// `tokensave_search`.
+#[tokio::test]
+async fn a_node_not_found_error_names_no_tool_of_a_disabled_area() {
+    let (_dir, cg) = setup_project().await;
+    for tool in ["tokensave_callers", "tokensave_callees"] {
+        let message = |session: tokensave::mcp::SessionState| {
+            let cg = &cg;
+            async move {
+                let result = tokensave::mcp::handle_tool_call_with_session(
+                    cg,
+                    tool,
+                    json!({"node_id": "helper"}),
+                    None,
+                    None,
+                    false,
+                    Some(&session),
+                )
+                .await;
+                let Err(err) = result else {
+                    panic!("expected an error for a nonexistent node_id")
+                };
+                format!("{err}")
+            }
+        };
+        let on = message(session_with_disabled_areas(&["git"])).await;
+        assert!(on.contains("tokensave_callers_for (via"), "{tool}: {on}");
+
+        let off = message(session_with_disabled_areas(&["navigate"])).await;
+        assert!(off.contains("node not found"), "{tool}: {off}");
+        assert!(!off.contains("tokensave_callers_for"), "{tool}: {off}");
+        assert!(!off.contains("tokensave_more"), "{tool}: {off}");
+        assert!(
+            off.contains("to look up by symbol name use tokensave_search."),
+            "{tool}: {off}"
+        );
+    }
+}
+
+/// With the `navigate` area turned off, a call by name to
+/// `tokensave_entities` still reports the companion documents, without the
+/// hint that sends the agent to `tokensave_doc`.
+#[tokio::test]
+#[cfg(feature = "lang-markdown")]
+async fn entities_gives_no_doc_hint_when_the_area_of_the_doc_tool_is_disabled() {
+    let (_dir, cg) = setup_documented_project().await;
+    let session = session_with_disabled_areas(&["navigate"]);
+    let result = tokensave::mcp::handle_tool_call_with_session(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/big_class.rs"}),
+        None,
+        None,
+        false,
+        Some(&session),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+    assert_eq!(parsed["doc_path"], json!(["src/big_class.readme.md"]));
+    assert!(parsed.get("doc_hint").is_none(), "{parsed:?}");
+    assert!(!text.contains("tokensave_doc"), "{text}");
+}
