@@ -535,7 +535,11 @@ fn doctor_check_launch(dc: &mut DoctorCounters, server: &toml::Table, project_pa
         ));
     }
 
-    doctor_probe_handshake(dc, &resolved, &args, server, project_path, timeout);
+    if dc.read_only {
+        dc.info("Live MCP startup probe skipped in read-only mode");
+    } else {
+        doctor_probe_handshake(dc, &resolved, &args, server, project_path, timeout);
+    }
 }
 
 /// Launch the configured server once and time `initialize` + `tools/list`

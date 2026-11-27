@@ -574,6 +574,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
     }
 
+    if let Commands::Doctor {
+        agent,
+        read_only: true,
+        caveman,
+        session_id,
+    } = &command
+    {
+        let caveman = caveman.then_some(tokensave::doctor::CavemanCheck {
+            session_id: session_id.as_deref(),
+        });
+        tokensave::doctor::run_doctor_read_only(agent.as_deref(), caveman).await;
+        return Ok(());
+    }
+
     let skip_agent_install_maintenance = agent_maintenance_disabled_from_env(
         std::env::var("TOKENSAVE_SKIP_AGENT_MAINTENANCE")
             .ok()
@@ -1966,6 +1980,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             agent,
             caveman,
             session_id,
+            ..
         } => {
             let caveman = caveman.then_some(tokensave::doctor::CavemanCheck {
                 session_id: session_id.as_deref(),
@@ -2659,6 +2674,7 @@ mod startup_tests {
     fn doctor_skips_agent_install_maintenance() {
         let command = Commands::Doctor {
             agent: Some("kiro".to_string()),
+            read_only: false,
             caveman: false,
             session_id: None,
         };

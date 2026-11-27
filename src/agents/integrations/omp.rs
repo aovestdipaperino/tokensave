@@ -131,15 +131,7 @@ impl AgentIntegration for OmpIntegration {
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        if home.join(".omp").is_dir() {
-            return true;
-        }
-        if load_omp_profile_registry(home)
-            .is_ok_and(|registry| registry.agent_dirs.iter().any(|path| path.is_dir()))
-        {
-            return true;
-        }
-        resolve_omp_agent_dir().is_ok_and(|path| path.is_dir())
+        is_detected_without_probe(home) || resolve_omp_agent_dir().is_ok_and(|path| path.is_dir())
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
@@ -295,6 +287,12 @@ pub(crate) fn has_recorded_integration(home: &Path) -> bool {
             .iter()
             .any(|dir| omp_mcp_has_tokensave(&dir.join("mcp.json")))
     })
+}
+
+pub(crate) fn is_detected_without_probe(home: &Path) -> bool {
+    home.join(".omp").is_dir()
+        || load_omp_profile_registry(home)
+            .is_ok_and(|registry| registry.agent_dirs.iter().any(|path| path.is_dir()))
 }
 
 fn omp_candidate_dirs(home: &Path) -> Vec<PathBuf> {
@@ -633,7 +631,10 @@ fn doctor_check_global_profiles(dc: &mut DoctorCounters, home: &Path) {
     if home.join(".omp").join("agent").is_dir() {
         targets.push(home.join(".omp").join("agent"));
     }
-    match resolve_omp_agent_dir() {
+    if dc.read_only {
+        dc.info("Live OMP profile lookup skipped in read-only mode");
+    } else {
+        match resolve_omp_agent_dir() {
         Ok(active) => targets.push(active),
         Err(_) if targets.is_empty() && !home.join(".omp").is_dir() => return,
         Err(error) if targets.is_empty() => dc.fail(&format!(
@@ -642,6 +643,7 @@ fn doctor_check_global_profiles(dc: &mut DoctorCounters, home: &Path) {
         Err(error) => dc.warn(&format!(
             "could not resolve the active OMP profile with `omp config path`; checking recorded profiles only: {error}"
         )),
+        }
     }
     let _ = normalize_agent_dirs(&mut targets);
 

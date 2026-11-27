@@ -117,6 +117,7 @@ pub struct HealthcheckContext {
 pub struct DoctorCounters {
     pub issues: u32,
     pub warnings: u32,
+    pub(crate) read_only: bool,
 }
 
 impl DoctorCounters {

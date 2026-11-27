@@ -10,6 +10,9 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
+Run `tokensave doctor --read-only` to collect local diagnostics without changing project, machine, or agent configuration. The report checks database paths and project database size from file metadata. It skips SQLite opens, compaction, stale-project inspection and cleanup, automatic repairs, and live subprocess and network probes. This avoids creating or updating SQLite journal or shared-memory files. Run plain `tokensave doctor` when you want database maintenance, the stale-project cleanup prompt, or live startup diagnostics. The read-only flag also works with `--agent` and `--caveman`.
+
+Checks: binary location, project index, global DB, user config, where project state lives, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 Checks: binary location, project index (including the periodic integrity-check interval and last result), global DB, user config, where project state lives, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
 Doctor checks an agent integration in full only when tokensave is set up in that agent. The **Agent integrations** section sorts every supported agent into one of these groups:

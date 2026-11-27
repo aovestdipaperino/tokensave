@@ -87,6 +87,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
 ### Added
 
+- `tokensave doctor --read-only` collects local diagnostics without changing project, machine, or agent state (Refs #1121).
+
 - **Turn off whole tool areas (`disabled_tool_areas`, Refs #1161).** A list of area names (`analysis`, `edit`, `git`, `memory`, `navigate`) in `~/.tokensave/config.toml`, such as `disabled_tool_areas = ["memory"]`, keeps the tools of those areas out of `tools/list` for the core and the full toolset, out of `tokensave_more` and out of the `initialize` instructions. Use it when another MCP server already supplies those tools, so the agent sees one tool for each job. A call by name to such a tool does not run: the answer says in plain words that the tool is disabled. Tool results, tool descriptions, the server instructions and the schema resource do not send the agent to a tool of such an area. `tokensave doctor` shows each area that is off, with its tools. Empty by default: nothing changes without the setting.
 
 - `tokensave_god_class` accepts `kinds` (any of `class`, `struct`, `inner_class`, `object`) and `exclude_data_structs`, which leaves out structs without methods (Refs #N).

@@ -10,6 +10,10 @@ use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::{format_bytes, format_token_count};
 use crate::tokensave::TokenSave;
 
+mod constants {
+    pub(super) const PROJECT_DB_FILENAME: &str = "tokensave.db";
+}
+
 /// Options for the Caveman compatibility check (`doctor --caveman`, #797).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CavemanCheck<'a> {
@@ -23,12 +27,32 @@ pub struct CavemanCheck<'a> {
 /// checks and the per-agent report is printed as JSON on stdout after the
 /// summary; the human-readable output stays on stderr.
 pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck<'_>>) {
+    run_checks(agent_filter, caveman, DoctorCounters::new()).await;
+}
+
+/// Inspect the installation without opening databases, running live probes,
+/// or changing settings.
+pub async fn run_doctor_read_only(agent_filter: Option<&str>, caveman: Option<CavemanCheck<'_>>) {
+    run_checks(
+        agent_filter,
+        caveman,
+        DoctorCounters {
+            read_only: true,
+            ..DoctorCounters::default()
+        },
+    )
+    .await;
+}
+
+async fn run_checks(
+    agent_filter: Option<&str>,
+    caveman: Option<CavemanCheck<'_>>,
+    mut dc: DoctorCounters,
+) {
     debug_assert!(
         !env!("CARGO_PKG_VERSION").is_empty(),
         "CARGO_PKG_VERSION must not be empty"
     );
-    let mut dc = DoctorCounters::new();
-
     eprintln!(
         "\n\x1b[1mtokensave doctor v{}\x1b[0m\n",
         env!("CARGO_PKG_VERSION")
@@ -43,7 +67,16 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
             "Index found: {}",
             crate::config::get_tokensave_dir(&project_path).display()
         ));
-        check_database(&mut dc, &project_path).await;
+        if dc.read_only {
+            if let Ok(metadata) = std::fs::metadata(project_db_path(&project_path)) {
+                dc.pass(&format!("DB size: {}", format_bytes(metadata.len())));
+            } else {
+                dc.warn("Could not read project database metadata");
+            }
+            dc.info("Database open and compaction skipped in read-only mode");
+        } else {
+            check_database(&mut dc, &project_path).await;
+        }
         check_hook_freshness(&mut dc, &project_path);
     } else {
         dc.warn(&format!(
@@ -54,8 +87,15 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
 
     check_global_db(&mut dc);
     check_index_scope(&mut dc, &project_path);
-    check_stale_stores(&mut dc).await;
-    check_user_config(&mut dc);
+    let user_config = if dc.read_only {
+        dc.info("Stale project inspection and cleanup skipped in read-only mode");
+        dc.info("Run `tokensave doctor` for database maintenance and stale project cleanup");
+        crate::user_config::UserConfig::read_for_doctor()
+    } else {
+        check_stale_stores(&mut dc).await;
+        crate::user_config::UserConfig::load()
+    };
+    check_user_config(&mut dc, &user_config);
     check_state_location(&mut dc, &project_path);
 
     // Agent-specific health checks
@@ -64,7 +104,7 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
             home: home.clone(),
             project_path: project_path.clone(),
         };
-        let installed = crate::user_config::UserConfig::load().installed_agents;
+        let installed = user_config.installed_agents;
         match agent_filter {
             Some(id) => match agents::get_integration(id) {
                 Ok(ag) => check_requested_agent(&mut dc, ag.as_ref(), &hctx, &installed),
@@ -81,7 +121,11 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck
     let caveman_reports =
         caveman.map(|check| check_caveman(&mut dc, agent_filter, check, &project_path));
 
-    check_network(&mut dc);
+    if dc.read_only {
+        dc.info("Network probes skipped in read-only mode");
+    } else {
+        check_network(&mut dc);
+    }
     print_summary(&dc);
 
     if let Some(reports) = caveman_reports {
@@ -120,7 +164,7 @@ fn check_agents(
     use agents::IntegrationPresence;
     let mut overview = AgentOverview::default();
     for ag in all {
-        match agents::integration_presence(ag.as_ref(), &hctx.home, installed) {
+        match agents::registry::doctor_presence(ag.as_ref(), &hctx.home, installed, dc.read_only) {
             IntegrationPresence::Installed => {
                 ag.healthcheck(dc, hctx);
                 overview.installed.push(ag.name());
@@ -192,7 +236,7 @@ fn check_requested_agent(
     hctx: &HealthcheckContext,
     installed: &[String],
 ) {
-    match agents::integration_presence(ag, &hctx.home, installed) {
+    match agents::registry::doctor_presence(ag, &hctx.home, installed, dc.read_only) {
         agents::IntegrationPresence::Absent { detected } => {
             eprintln!("\n\x1b[1m{} integration\x1b[0m", ag.name());
             let found = if detected {
@@ -278,7 +322,7 @@ fn check_caveman(
 
 /// Check database health: report size and run VACUUM to reclaim space.
 async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
-    let db_path = crate::config::get_tokensave_dir(project_path).join("tokensave.db");
+    let db_path = project_db_path(project_path);
     let size_before = std::fs::metadata(&db_path).map_or(0, |m| m.len());
 
     let ts = match TokenSave::open(project_path).await {
@@ -314,6 +358,8 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     }
 }
 
+fn project_db_path(project_path: &Path) -> std::path::PathBuf {
+    crate::config::get_tokensave_dir(project_path).join(constants::PROJECT_DB_FILENAME)
 /// Report the periodic integrity-check interval and the last saved result, so
 /// the opt-in idle check is discoverable without `integrity-check --status`.
 fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
@@ -442,11 +488,7 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .list_project_paths()
         .await
         .into_iter()
-        .filter(|p| {
-            !crate::config::get_tokensave_dir(Path::new(p))
-                .join("tokensave.db")
-                .exists()
-        })
+        .filter(|p| !project_db_path(Path::new(p)).exists())
         .collect();
     if stale.is_empty() {
         dc.pass("No stale projects in global DB");
@@ -569,11 +611,10 @@ fn check_state_location(dc: &mut DoctorCounters, project_path: &Path) {
 }
 
 /// Check user config file.
-fn check_user_config(dc: &mut DoctorCounters) {
+fn check_user_config(dc: &mut DoctorCounters, config: &crate::user_config::UserConfig) {
     eprintln!("\n\x1b[1mUser config\x1b[0m");
     if let Some(config_path) = crate::user_config::config_path() {
         if config_path.exists() {
-            let config = crate::user_config::UserConfig::load();
             dc.pass(&format!("Config: {}", config_path.display()));
             if let Some(var) = crate::cloud::telemetry_opt_out() {
                 dc.info(&format!("Telemetry disabled by {var} (no counter upload)"));

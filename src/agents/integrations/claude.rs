@@ -923,7 +923,9 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
         dc.pass("Claude Code hooks disabled in config (claude_hooks = false)");
     } else {
         doctor_check_hook(dc, &settings);
-        doctor_fix_hooks(dc, &settings_path, &settings);
+        if !dc.read_only {
+            doctor_fix_hooks(dc, &settings_path, &settings);
+        }
     }
     if permissions_management_enabled(home) {
         doctor_check_permissions(dc, &settings);
