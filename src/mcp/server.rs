@@ -1192,12 +1192,8 @@ impl McpServer {
     /// schema resource do not send the agent to such a tool. Call this before the client connects, because the server
     /// sends no `list_changed` notification for it.
     pub fn set_disabled_tool_areas(&self, areas: &[String]) -> Vec<String> {
-        let (known, unknown): (Vec<String>, Vec<String>) = areas
-            .iter()
-            .map(|area| area.trim().to_ascii_lowercase())
-            .partition(|area| TOOL_AREAS.iter().any(|(name, _, _)| name == area));
-        self.session_state
-            .set_disabled_tool_areas(known.into_iter().collect());
+        let (known, unknown) = crate::mcp::tools::partition_tool_areas(areas);
+        self.session_state.set_disabled_tool_areas(known);
         unknown
     }
 

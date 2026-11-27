@@ -698,6 +698,29 @@ pub fn is_disabled_tool(name: &str, disabled_areas: &std::collections::BTreeSet<
     !CORE_TOOLS.contains(&name) && disabled_areas.contains(tool_area(name))
 }
 
+/// Splits the values of the `disabled_tool_areas` setting into the areas of
+/// [`TOOL_AREAS`] that they name and the values that name no area. Case and
+/// spaces around a value do not matter.
+pub fn partition_tool_areas(
+    configured: &[String],
+) -> (std::collections::BTreeSet<String>, Vec<String>) {
+    let (known, unknown): (Vec<String>, Vec<String>) = configured
+        .iter()
+        .map(|area| area.trim().to_ascii_lowercase())
+        .partition(|area| TOOL_AREAS.iter().any(|(name, _, _)| name == area));
+    (known.into_iter().collect(), unknown)
+}
+
+/// The names of the tools in `area`, as `tools/list` can list them.
+pub fn tools_in_area(area: &str) -> Vec<String> {
+    get_tool_definitions()
+        .into_iter()
+        .filter(|d| !is_hidden_tool(d))
+        .map(|d| d.name)
+        .filter(|name| !CORE_TOOLS.contains(&name.as_str()) && tool_area(name) == area)
+        .collect()
+}
+
 /// True when `area` is `"all"` or the name of an entry in [`TOOL_AREAS`].
 pub fn is_tool_area(area: &str) -> bool {
     area == "all" || TOOL_AREAS.iter().any(|(name, _, _)| *name == area)

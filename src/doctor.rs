@@ -570,6 +570,40 @@ fn check_user_config(dc: &mut DoctorCounters) {
             "auto_init off ({source}): run `tokensave init` in new repositories"
         ));
     }
+    let (off, unknown) =
+        disabled_tool_areas_report(&crate::user_config::disabled_tool_areas_setting());
+    for line in off {
+        dc.info(&line);
+    }
+    if let Some(line) = unknown {
+        dc.warn(&line);
+    }
+}
+
+/// The doctor lines for the `disabled_tool_areas` setting: one line for each
+/// area that is off, with the tools that the MCP server does not run, and a
+/// warning for the values that name no area. No line when the setting is
+/// empty.
+fn disabled_tool_areas_report(configured: &[String]) -> (Vec<String>, Option<String>) {
+    use crate::mcp::tools::{partition_tool_areas, tools_in_area, DISABLED_TOOL_AREAS_SETTING};
+    let (areas, unknown) = partition_tool_areas(configured);
+    let off = areas
+        .iter()
+        .map(|area| {
+            format!(
+                "Tool area \"{area}\" off ({DISABLED_TOOL_AREAS_SETTING}): the MCP server \
+                 does not list or run {}",
+                tools_in_area(area).join(", ")
+            )
+        })
+        .collect();
+    let unknown = (!unknown.is_empty()).then(|| {
+        format!(
+            "{DISABLED_TOOL_AREAS_SETTING} names no tool area: {}",
+            unknown.join(", ")
+        )
+    });
+    (off, unknown)
 }
 
 /// Check network connectivity.
@@ -660,6 +694,33 @@ fn check_hook_freshness(dc: &mut DoctorCounters, project_path: &std::path::Path)
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_reports_each_disabled_tool_area_with_its_tools() {
+        let configured =
+            |names: &[&str]| -> Vec<String> { names.iter().map(ToString::to_string).collect() };
+        // The default: nothing is off, and doctor prints no line.
+        assert_eq!(disabled_tool_areas_report(&[]), (Vec::new(), None));
+
+        let (off, unknown) = disabled_tool_areas_report(&configured(&[" Memory ", "git"]));
+        assert_eq!(unknown, None);
+        assert_eq!(off.len(), 2, "{off:?}");
+        let memory = off.iter().find(|line| line.contains("\"memory\"")).unwrap();
+        assert!(memory.contains("disabled_tool_areas"), "{memory}");
+        assert!(memory.contains("tokensave_session_recall"), "{memory}");
+        assert!(!memory.contains("tokensave_blame"), "{memory}");
+        let git = off.iter().find(|line| line.contains("\"git\"")).unwrap();
+        assert!(git.contains("tokensave_blame"), "{git}");
+        // A core tool is in no area, so no line names one.
+        assert!(off.iter().all(|line| !line.contains("tokensave_search")));
+
+        let (off, unknown) = disabled_tool_areas_report(&configured(&["nope", "all"]));
+        assert_eq!(off, Vec::<String>::new());
+        assert_eq!(
+            unknown.as_deref(),
+            Some("disabled_tool_areas names no tool area: nope, all")
+        );
+    }
 
     /// A project directory with an index of `db_bytes`, plus a small WAL, so
     /// the size check has something real to stat. It also writes the
