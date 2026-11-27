@@ -714,9 +714,7 @@ fn is_read_only_sed(rest: &str) -> bool {
     saw_script
 }
 
-/// A pipeline stage that only filters what flows through it, so dropping it
-/// with a denial loses nothing. Writers (`tee`, `xargs`, `sort -o`, …) and
-/// anything unrecognised are work.
+/// Identify read-only filter stages for search telemetry.
 fn is_read_only_filter(stage: &str) -> bool {
     const FILTERS: [&str; 10] = [
         "head", "tail", "wc", "cat", "grep", "rg", "cut", "tr", "nl", "column",
@@ -984,22 +982,18 @@ fn evaluate_bash_command_inner(command: &str, env: &HookEnv) -> Option<String> {
     // an attempt to slip past the hook. Redirect the search only when every
     // other segment is inert, so a denial can never discard real work.
     //
-    // #648: every segment is evaluated, and so is each pipeline. Only the
-    // head of a pipeline can be a code search — a grep further down reads its
-    // stdin, not the tree — and every stage after it must be a read-only
-    // filter (`| head`, `| sort | uniq`), or the pipeline is work.
+    // #1138: a symbol lookup cannot preserve a pipeline's downstream filters,
+    // ordering, limits, or exit status. Leave the entire invocation to the shell.
     let segments = split_top_level_segments(command)?;
     let mut reason = None;
     for stages in &segments {
-        let (first, filters) = stages.split_first()?;
-        let read_only_filters = filters.iter().all(|stage| is_read_only_filter(stage));
-        if !read_only_filters {
-            grep_check("Bash", "read_only_pipeline_filters", false);
+        let [first] = stages.as_slice() else {
+            grep_check("Bash", "standalone_search_stage", false);
             return None;
-        }
+        };
         if let Some(found) = evaluate_bash_segment(first, env) {
             reason.get_or_insert(found);
-        } else if !is_inert_command(first, reason.is_none() && filters.is_empty()) {
+        } else if !is_inert_command(first, reason.is_none()) {
             grep_check("Bash", "inert_companion_command", false);
             return None;
         }

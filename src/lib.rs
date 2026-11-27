@@ -29,6 +29,7 @@ pub mod config;
 pub mod context;
 pub mod cpu;
 pub mod db;
+pub mod db_integrity;
 #[doc(hidden)]
 pub mod debug_log;
 pub mod derive_table;

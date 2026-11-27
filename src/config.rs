@@ -84,6 +84,9 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// Seconds between idle MCP database checks; zero (the default) disables them.
+    #[serde(default = "default_integrity_interval_secs")]
+    pub integrity_interval_secs: u64,
     /// Persistent stderr diagnostic verbosity. CLI flags override
     /// `TOKENSAVE_LOG`, which overrides this project setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,9 +317,14 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
     value
 }
 
+fn default_integrity_interval_secs() -> u64 {
+    crate::db_integrity::DEFAULT_INTERVAL_SECS
+}
+
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            integrity_interval_secs: default_integrity_interval_secs(),
             log_level: None,
             language_detection: crate::language_detection::DetectionConfig::default(),
             cpu_usage: None,

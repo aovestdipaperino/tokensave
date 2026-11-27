@@ -415,6 +415,17 @@ portable string formats, and documented path-syntax test fixtures.
   branch-specific until the implementation is merged; do not copy commands to
   branches that lack the implementation.
 
+## Periodic integrity checks (master candidate)
+
+- `tokensave integrity-check <database> [--full|--status]` uses a bounded,
+  read-only child and never invokes recovery or migrations. Keep child timeout,
+  cancellation/reaping, cross-process lock and diagnostic bounds intact.
+- MCP checks are opt-in and run only during idle time; `integrity_interval_secs`
+  defaults to 0 (disabled), and 86400 is the suggested daily setting. Checks deferred for activity retry after
+  `DEFERRED_RETRY_SECS`; every other attempt counts toward the full interval.
+  `doctor` reports the interval and last result. See [docs/DATABASE-INTEGRITY.md](docs/DATABASE-INTEGRITY.md).
+- Focused tests: `cargo test --test integration integrity_test::`.
+  This guidance is branch-specific until merged; beta lacks this implementation.
 ## Experimental SCIP comparison (master candidate)
 
 - `tokensave scip-compare` (#1100) requires `"enable_scip": true` in the project

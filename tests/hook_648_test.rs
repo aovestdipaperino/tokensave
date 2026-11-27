@@ -3,8 +3,8 @@
 //! #648 listed command shapes that still let a symbol search through:
 //! `git grep` (which searches the working tree unless given a revision), a
 //! search batched behind a read-only command such as `sed -n …p` or another
-//! grep, a call-site pattern with something after the `(`, and a search piped into a read-only
-//! filter such as `head`.
+//! grep, and a call-site pattern with something after the `(`. Search
+//! pipelines run unchanged to preserve downstream filters (#1138).
 //!
 //! #649: the denial pointed usages at `tokensave_callers_for`, which takes node
 //! ids and is not a core tool. #654: the denial should carry the concrete
@@ -98,15 +98,22 @@ fn already_correct_shapes_stay_denied() {
 }
 
 #[test]
-fn a_search_piped_into_a_read_only_filter_is_denied() {
+fn search_pipelines_preserve_filters_and_limits() {
     let (_tmp, root) = project();
     for command in [
         "grep -rn MySymbol src | head -20",
         "rg -n MySymbol src | sort | uniq",
         "grep -rn MySymbol src 2>/dev/null | wc -l",
         "echo start; grep -rn MySymbol src | tail -5",
+        "grep -rn MySymbol src; ls src | head -5",
+        r#"grep -rn 'ExampleSymbol' --include='*.cs' . | grep -v '/obj/\\|Forms/ExampleSymbol' | head -5"#,
+        r#"grep -rn "ExampleSymbol" --include="*.cs" . | grep -Ev "/obj/|Forms/ExampleSymbol" | head -n 5"#,
+        r#"grep -rn ExampleSymbol --include=*.cs . | grep -v "/obj/\\|Forms/ExampleSymbol" | head -n5"#,
     ] {
-        assert!(is_blocked(command, &root), "must be denied: {command}");
+        assert!(
+            decision(command, &root).is_empty(),
+            "must pass through: {command}"
+        );
     }
 }
 

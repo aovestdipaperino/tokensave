@@ -2450,7 +2450,15 @@ impl McpServer {
         // for them instead of leaving them against a closing database.
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
+        let mut integrity = self.cg.as_ref().map(|cg| {
+            crate::db_integrity::Scheduler::new(
+                cg.db_path(),
+                cg.get_config().integrity_interval_secs,
+            )
+        });
         'serve: loop {
+            // Maintenance ticks must not restart the user-facing idle deadline.
+            let mut idle_timer = Box::pin(idle_deadline(idle_timeout));
             // The inner loop exists only so a deferred idle expiry can re-arm:
             // a deadline that lands while a detached startup job is still
             // running is not evidence the server is finished with, so it waits
@@ -2483,6 +2491,7 @@ impl McpServer {
                         response = response_rx.recv() => {
                             match response {
                                 Some(response) => {
+                                    idle_timer = Box::pin(idle_deadline(idle_timeout));
                                     let mut writer = writer.lock().await;
                                     if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
@@ -2499,10 +2508,21 @@ impl McpServer {
                         // orphan watchdog, which has no signal to deliver at
                         // all (#450).
                         () = crate::cancel::cancelled() => break 'serve,
-                        () = idle_deadline(idle_timeout) => {
+                        () = idle_deadline(integrity.as_ref().map(crate::db_integrity::Scheduler::delay)) => {
+                            if let Some(scheduler) = integrity.as_mut() {
+                                let busy = self.startup_work_in_flight() || self.lazy_sync_in_flight()
+                                    || in_flight.load(Ordering::Acquire) > 0
+                                    || self.cg.as_ref().is_some_and(|cg| crate::tokensave::sync_in_progress(cg.project_root()));
+                                if let Err(error) = scheduler.tick(busy).await {
+                                    eprintln!("[tokensave] integrity check: {error}");
+                                }
+                            }
+                        }
+                        () = &mut idle_timer => {
                             if self.startup_work_in_flight()
                                 || in_flight.load(Ordering::Acquire) > 0
                             {
+                                idle_timer = Box::pin(idle_deadline(idle_timeout));
                                 continue 'wait;
                             }
                             report_idle_exit(idle_timeout);
@@ -2536,6 +2556,7 @@ impl McpServer {
                         response = response_rx.recv() => {
                             match response {
                                 Some(response) => {
+                                    idle_timer = Box::pin(idle_deadline(idle_timeout));
                                     let mut writer = writer.lock().await;
                                     if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
@@ -2546,10 +2567,21 @@ impl McpServer {
                         }
                         _ = tokio::signal::ctrl_c() => break 'serve,
                         () = crate::cancel::cancelled() => break 'serve,
-                        () = idle_deadline(idle_timeout) => {
+                        () = idle_deadline(integrity.as_ref().map(crate::db_integrity::Scheduler::delay)) => {
+                            if let Some(scheduler) = integrity.as_mut() {
+                                let busy = self.startup_work_in_flight() || self.lazy_sync_in_flight()
+                                    || in_flight.load(Ordering::Acquire) > 0
+                                    || self.cg.as_ref().is_some_and(|cg| crate::tokensave::sync_in_progress(cg.project_root()));
+                                if let Err(error) = scheduler.tick(busy).await {
+                                    eprintln!("[tokensave] integrity check: {error}");
+                                }
+                            }
+                        }
+                        () = &mut idle_timer => {
                             if self.startup_work_in_flight()
                                 || in_flight.load(Ordering::Acquire) > 0
                             {
+                                idle_timer = Box::pin(idle_deadline(idle_timeout));
                                 continue 'wait;
                             }
                             report_idle_exit(idle_timeout);
@@ -2559,6 +2591,11 @@ impl McpServer {
                 }
             };
 
+            if let Some(scheduler) = integrity.as_mut() {
+                if let Err(error) = scheduler.stop().await {
+                    eprintln!("[tokensave] integrity check: {error}");
+                }
+            }
             let line = line.trim().to_string();
             if line.is_empty() {
                 continue;
@@ -2628,6 +2665,11 @@ impl McpServer {
 
         // The reader is parked on the transport and will never return; the
         // loop is over, so it must not outlive it.
+        if let Some(scheduler) = integrity.as_mut() {
+            if let Err(error) = scheduler.stop().await {
+                eprintln!("[tokensave] integrity check shutdown: {error}");
+            }
+        }
         reader_task.abort();
         self.client_requests.disconnect();
         request_task.abort();
