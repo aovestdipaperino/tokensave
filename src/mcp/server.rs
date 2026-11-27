@@ -4522,7 +4522,7 @@ mod default_footprint_tests {
     /// once per session, so this is the fixed context cost of a default
     /// install. Raise it only with a reason stated in the pull request, and
     /// update the report.
-    const DEFAULT_FOOTPRINT_BYTES: usize = 24_226;
+    const DEFAULT_FOOTPRINT_BYTES: usize = 24_043;
 
     /// The default footprint: the core toolset with no area revealed, and the
     /// instructions with savings reporting off and no sibling projects. The

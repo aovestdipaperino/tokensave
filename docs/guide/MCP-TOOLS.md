@@ -122,6 +122,8 @@ and not a fallback to a parent branch's index).
 | `tokensave_vuln_reachability` | Report cached OSV advisories and indexed call evidence. Set `TOKENSAVE_OSV_ONLINE=1` in the server environment to allow refreshes. |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
+Call `tokensave_context` with a non-empty `task` string, for example `{"task":"Find authentication tests"}`. The `query` alias also works. When both are supplied, their values must match.
+
 ### Call Graph & Impact
 
 | Tool | Purpose |
