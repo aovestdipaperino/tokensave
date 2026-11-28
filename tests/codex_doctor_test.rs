@@ -117,6 +117,25 @@ fn a_disabled_server_is_an_issue() {
 }
 
 #[test]
+fn a_missing_configured_working_directory_is_an_issue() {
+    let dir = TempDir::new().expect("create test home");
+    let home = dir.path();
+    CodexIntegration
+        .install(&make_install_ctx_with_real_bin(home))
+        .expect("install Codex integration");
+    edit_server(home, |server| {
+        server.insert(
+            "cwd".into(),
+            toml::Value::String("missing-directory".into()),
+        );
+    });
+    assert_eq!(healthcheck(home, home).issues, 1);
+
+    std::fs::create_dir(home.join("missing-directory")).expect("create configured directory");
+    assert_eq!(healthcheck(home, home).issues, 0);
+}
+
+#[test]
 fn a_command_that_cannot_be_launched_is_an_issue() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();

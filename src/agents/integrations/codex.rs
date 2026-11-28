@@ -36,6 +36,7 @@ mod codex_config {
     pub const DISABLED_TOOLS_KEY: &str = "disabled_tools";
     /// Extra environment for the server process.
     pub const ENV_KEY: &str = "env";
+    pub const CWD_KEY: &str = "cwd";
     /// Extra time the doctor probe allows past the timeout, to tell "slow"
     /// from "hung".
     pub const PROBE_GRACE_SECS: u64 = 10;
@@ -624,10 +625,32 @@ fn doctor_check_launch(dc: &mut DoctorCounters, server: &toml::Table, project_pa
         ));
     }
 
+    let probe_path = match server.get(codex_config::CWD_KEY) {
+        Some(value) => {
+            let Some(directory) = value.as_str().filter(|directory| !directory.is_empty()) else {
+                dc.fail("Codex MCP cwd must be a nonempty path string");
+                return;
+            };
+            let directory = project_path.join(directory);
+            if !directory.is_dir() {
+                dc.fail(&format!(
+                    "Codex MCP working directory does not exist or is not a directory: {}",
+                    directory.display()
+                ));
+                return;
+            }
+            dc.info(&format!(
+                "Codex MCP working directory: {}",
+                directory.display()
+            ));
+            directory
+        }
+        None => project_path.to_path_buf(),
+    };
     if dc.read_only {
         dc.info("Live MCP startup probe skipped in read-only mode");
     } else {
-        doctor_probe_handshake(dc, &resolved, &args, server, project_path, timeout);
+        doctor_probe_handshake(dc, &resolved, &args, server, &probe_path, timeout);
     }
 }
 

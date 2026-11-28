@@ -117,9 +117,9 @@ Codex starts MCP servers when a session starts and drops any server that has not
 - that the configured `command` can be found and its `args` include `serve`
 - the startup timeout, with a warning when it is not set
 - that `enabled_tools` or `disabled_tools` do not hide tokensave's read-only tools
-- a live startup: doctor launches the configured command with its `env` table, the way Codex would, in the current project. It sends `initialize` and `tools/list` and compares the time with the startup timeout. The probe runs only for a `tokensave` executable and only in an indexed project, so it never indexes a new repository. It stops the server afterwards.
+- a live startup: doctor checks the configured MCP `cwd` and uses it for the probe. Without a `cwd`, doctor uses the current project. It launches the configured command with its `env` table, sends `initialize` and `tools/list`, and compares the time with the startup timeout. The probe runs only for a `tokensave` executable and only when the working directory is indexed. It stops the server afterwards.
 
-If the probe is slower than the timeout, raise `startup_timeout_sec`. If it fails, run the configured command with `serve` in the project to see its error output. Then start a new Codex session, because Codex reads MCP servers only at startup.
+If the probe is slower than the timeout, raise `startup_timeout_sec`. If it fails, run the configured command with `serve` from its working directory to see its error output. Then start a new Codex session, because Codex reads MCP servers only at startup.
 
 ## Missing symbols in search
 
