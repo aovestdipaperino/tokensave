@@ -180,6 +180,9 @@ fn check_agents(
                 ));
                 overview.leftover.push(ag.name());
             }
+            IntegrationPresence::Absent { .. } if ag.healthcheck_project(dc, hctx) => {
+                overview.installed.push(ag.name());
+            }
             IntegrationPresence::Absent { detected: true } => {
                 overview.detected_absent.push((ag.name(), ag.id()));
             }
@@ -237,6 +240,7 @@ fn check_requested_agent(
     installed: &[String],
 ) {
     match agents::registry::doctor_presence(ag, &hctx.home, installed, dc.read_only) {
+        agents::IntegrationPresence::Absent { .. } if ag.healthcheck_project(dc, hctx) => {}
         agents::IntegrationPresence::Absent { detected } => {
             eprintln!("\n\x1b[1m{} integration\x1b[0m", ag.name());
             let found = if detected {

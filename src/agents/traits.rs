@@ -31,6 +31,12 @@ pub trait AgentIntegration {
     /// Verify installation health (replaces agent-specific doctor checks).
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext);
 
+    /// Report project-scoped configuration when the user integration is absent.
+    /// Returns true if a project-scoped TokenSave registration was found.
+    fn healthcheck_project(&self, _dc: &mut DoctorCounters, _ctx: &HealthcheckContext) -> bool {
+        false
+    }
+
     /// Returns true if this agent appears to be installed on the system
     /// (its config directory exists).
     fn is_detected(&self, _home: &Path) -> bool {

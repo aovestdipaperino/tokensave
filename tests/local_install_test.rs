@@ -5,9 +5,106 @@ use tokensave::agents::{DoctorCounters, HealthcheckContext, InstallContext, Inst
 use crate::common::read_json;
 
 #[test]
-fn codex_does_not_support_local() {
+fn codex_local_mcp_install_and_uninstall_preserve_other_settings() {
+    let home = TempDir::new().expect("create test home");
+    let project = TempDir::new().expect("create test project");
+    let project_config = project.path().join(".codex").join("config.toml");
+    std::fs::create_dir(project.path().join(".codex")).expect("create project config directory");
+    let original = r#"
+model = "custom"
+
+[mcp_servers.other]
+command = "other"
+
+[mcp_servers.tokensave]
+startup_timeout_sec = 90
+enabled_tools = ["tokensave_search"]
+"#;
+    let read_config =
+        || std::fs::read_to_string(&project_config).expect("read project configuration");
+    std::fs::write(&project_config, original).expect("write project configuration");
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "path with spaces/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: project.path().to_path_buf(),
+        },
+        force_permission_style: false,
+    };
     let ag = get_integration("codex").unwrap();
-    assert!(!ag.supports_local(), "codex must remain global-only");
+    assert!(ag.supports_local());
+    ag.install(&ctx).expect("install project MCP registration");
+    let installed = read_config();
+    ag.install(&ctx)
+        .expect("reinstall project MCP registration");
+    assert_eq!(read_config(), installed);
+    let config: toml::Table = toml::from_str(&installed).expect("parse installed TOML");
+    let server = &config["mcp_servers"]["tokensave"];
+    assert_eq!(server["command"].as_str(), Some(ctx.tokensave_bin.as_str()));
+    assert_eq!(server["startup_timeout_sec"].as_integer(), Some(90));
+    assert_eq!(
+        server["enabled_tools"]
+            .as_array()
+            .expect("preserve tool filter")[0]
+            .as_str(),
+        Some("tokensave_search")
+    );
+
+    let custom_home = home.path().join("custom-codex");
+    let user_config = custom_home.join("config.toml");
+    std::fs::create_dir(&custom_home).expect("create custom Codex home");
+    std::fs::write(&user_config, original).expect("write user-scoped MCP registration");
+    let diagnostic = std::process::Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .current_dir(project.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("CODEX_HOME", home.path().join("unused-codex-home"))
+        .args(["doctor", "--agent", "codex"])
+        .output()
+        .expect("diagnose project-only Codex registration");
+    assert!(
+        String::from_utf8_lossy(&diagnostic.stderr).contains("Codex project MCP server registered"),
+        "{diagnostic:?}"
+    );
+    let uninstall = |dry_run| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tokensave"));
+        command
+            .current_dir(project.path())
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("CODEX_HOME", &custom_home)
+            .args(["uninstall", "--local", "--agent", "codex", "--verbose"]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().expect("run local uninstall");
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("config.toml"));
+        assert_eq!(
+            std::fs::read_to_string(&user_config).expect("read user-scoped config"),
+            original
+        );
+    };
+    uninstall(true);
+    assert_eq!(read_config(), installed);
+    uninstall(false);
+    let config: toml::Table = toml::from_str(&read_config()).expect("parse remaining TOML");
+    assert!(config["mcp_servers"].get("tokensave").is_none());
+
+    ag.uninstall(&ctx).expect("repeat project uninstall");
+    assert_eq!(config["model"].as_str(), Some("custom"));
+    assert_eq!(
+        config["mcp_servers"]["other"]["command"].as_str(),
+        Some("other")
+    );
+    assert!(!project.path().join(".codex").join("hooks.json").exists());
+    assert!(!home.path().join(".codex").exists());
+
+    let malformed = "[mcp_servers";
+    std::fs::write(&project_config, malformed).expect("write malformed TOML");
+    assert!(ag.install(&ctx).is_err());
+    assert_eq!(read_config(), malformed);
 }
 
 #[test]

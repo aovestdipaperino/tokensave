@@ -704,7 +704,12 @@ mod codex_paths {
 pub(crate) fn codex_home_dir(home: &Path) -> PathBuf {
     std::env::var_os(codex_paths::HOME_ENV)
         .filter(|path| !path.is_empty())
-        .map_or_else(|| home.join(codex_paths::DEFAULT_DIR), PathBuf::from)
+        .map_or_else(|| codex_config_dir(home), PathBuf::from)
+}
+
+/// Returns the default Codex configuration directory under a user or project root.
+pub(crate) fn codex_config_dir(root: &Path) -> PathBuf {
+    root.join(codex_paths::DEFAULT_DIR)
 }
 
 /// Returns the GitHub Copilot CLI config directory.
