@@ -63,6 +63,12 @@ impl XamlExtractor {
         // The root element's x:Class is the view's identity; everything in
         // the file hangs off it. Without x:Class (resource dictionaries,
         // styles) children parent to the file node.
+        let code_behind = tags.first().and_then(|root| {
+            root.attrs.iter().find_map(|(key, value)| {
+                (key == "x:Class" && value.split('.').all(Self::is_identifier))
+                    .then_some(value.as_str())
+            })
+        });
         let class_id = tags.first().and_then(|root| {
             let class_attr = root
                 .attrs
@@ -97,8 +103,37 @@ impl XamlExtractor {
         });
         let parent_id = class_id.as_deref().unwrap_or(&file_node_id);
 
+        if let Some(class) = code_behind {
+            unresolved_refs.push(UnresolvedRef {
+                from_node_id: parent_id.to_string(),
+                reference_name: format!("xaml::{class}"),
+                reference_kind: EdgeKind::Uses,
+                line: tags.first().map_or(0, |tag| tag.line),
+                column: 0,
+                file_path: file_path.to_string(),
+            });
+        }
         let mut seen_uses: std::collections::HashSet<String> = std::collections::HashSet::new();
         for tag in &tags {
+            let data_type = tag
+                .attrs
+                .iter()
+                .find_map(|(key, value)| (key == "x:DataType").then_some(value.as_str()));
+            let data_type = data_type.and_then(|value| {
+                let (prefix, name) = value.split_once(':')?;
+                if !Self::is_identifier(name) {
+                    return None;
+                }
+                let namespace_key = format!("xmlns:{prefix}");
+                let (_, namespace) = tag.attrs.iter().find(|(key, _)| *key == namespace_key)?;
+                let namespace = namespace
+                    .strip_prefix("clr-namespace:")
+                    .or_else(|| namespace.strip_prefix("using:"))?;
+                namespace
+                    .split('.')
+                    .all(Self::is_identifier)
+                    .then(|| format!("{namespace}.{name}"))
+            });
             // Project-defined control: any namespace prefix except the XAML
             // language namespaces (x:) and designer/markup-compat noise
             // (d:, mc:). Prefixed elements name CLR types brought in via
@@ -121,6 +156,23 @@ impl XamlExtractor {
             }
 
             for (attr, value) in &tag.attrs {
+                if let Some((owner, member)) = data_type.as_deref().zip(
+                    value
+                        .strip_prefix("{Binding ")
+                        .or_else(|| value.strip_prefix("{CompiledBinding "))
+                        .and_then(|value| value.strip_suffix('}'))
+                        .map(|value| value.strip_prefix("Path=").unwrap_or(value).trim())
+                        .filter(|value| Self::is_identifier(value)),
+                ) {
+                    unresolved_refs.push(UnresolvedRef {
+                        from_node_id: parent_id.to_string(),
+                        reference_name: format!("xaml::{owner}::{member}"),
+                        reference_kind: EdgeKind::Uses,
+                        line: tag.line,
+                        column: 0,
+                        file_path: file_path.to_string(),
+                    });
+                }
                 if attr == "x:Name" || attr == "Name" {
                     let id = generate_node_id(file_path, &NodeKind::Field, value, tag.line);
                     nodes.push(Self::make_node(
@@ -147,10 +199,12 @@ impl XamlExtractor {
                         line: Some(tag.line),
                         resolved_by: None,
                     });
-                } else if Self::is_event_attr(attr) && Self::is_identifier(value) {
+                } else if let Some(class) =
+                    code_behind.filter(|_| Self::is_event_attr(attr) && Self::is_identifier(value))
+                {
                     unresolved_refs.push(UnresolvedRef {
                         from_node_id: parent_id.to_string(),
-                        reference_name: value.clone(),
+                        reference_name: format!("xaml::{class}::{value}"),
                         reference_kind: EdgeKind::Calls,
                         line: tag.line,
                         column: 0,

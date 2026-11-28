@@ -928,6 +928,40 @@ impl<'a> ReferenceResolver<'a> {
         {
             return None;
         }
+        if matches!(
+            std::path::Path::new(&uref.file_path).extension().and_then(|ext| ext.to_str()),
+            Some(ext) if ext.eq_ignore_ascii_case("xaml") || ext.eq_ignore_ascii_case("axaml")
+        ) {
+            if let Some(name) = uref.reference_name.strip_prefix("xaml::") {
+                let (owner, member) = name
+                    .split_once("::")
+                    .map_or((name, None), |(owner, member)| (owner, Some(member)));
+                let short_name =
+                    member.unwrap_or_else(|| owner.rsplit('.').next().unwrap_or(owner));
+                let candidates = self.name_cache.get(short_name)?;
+                let owner = owner.replace('.', "::");
+                let qualified =
+                    member.map_or_else(|| owner.clone(), |member| format!("{owner}::{member}"));
+                let mut matching = candidates.iter().copied().filter(|node| {
+                    is_csharp(&node.file_path)
+                        && node.qualified_name.replace('.', "::") == qualified
+                        && match member {
+                            None => node.kind == NodeKind::Class,
+                            Some(_) if uref.reference_kind == EdgeKind::Calls => {
+                                is_csharp_callable(node)
+                            }
+                            Some(_) => is_csharp_data_member(&node.kind),
+                        }
+                });
+                let target = matching.next()?;
+                return matching.next().is_none().then(|| ResolvedRef {
+                    original: uref.clone(),
+                    target_node_id: target.id.clone(),
+                    confidence: 0.95,
+                    resolved_by: ResolvedBy::QualifiedMatch.as_str().to_string(),
+                });
+            }
+        }
         // Route dispatch needs exact public instance ownership and is rebuilt by its own pass.
         if self
             .node_id_cache
