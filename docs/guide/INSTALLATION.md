@@ -81,6 +81,43 @@ tokensave channel stable --standalone    # return a verified standalone installa
 
 Standalone upgrades stay on their current channel. To change channels for a managed installation, use a channel supplied by its installer or install the requested channel separately.
 
+### Cargo upgrades on Windows
+
+Run the repository's `scripts/upgrade-windows.ps1` from a separate PowerShell
+session. This example uses the default Cargo root. If you installed with a
+custom root, use that directory and pass your original source and feature
+options with `-CargoArguments`.
+
+```powershell
+$cargoRoot = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
+.\scripts\upgrade-windows.ps1 -InstallRoot $cargoRoot -CargoArguments @('tokensave', '--locked')
+```
+
+The helper requests cooperative shutdown and waits for processes running the
+selected executable. It temporarily moves the old executable out of the launch
+path so supervisors cannot start it during the build. New TokenSave builds
+also refuse to start while the helper holds the upgrade lock. If Cargo fails
+before installing the replacement, the helper restores the original executable.
+It operates in the selected Cargo installation and leaves agent configuration
+and project indexes in place.
+
+Older builds cannot receive the shutdown request. Close the agents or pause
+their supervisors before upgrading those builds. If an instance still fails
+to exit, rerun with `-ForceStop` to explicitly terminate processes running
+that executable. If Windows denies access, check the directory permissions and
+whether the process and PowerShell session run at different integrity levels.
+Windows error 5 can have several causes, including permissions and file locks.
+
+If the helper itself is interrupted after moving the executable, wait for Cargo
+to exit. If `tokensave.exe` is missing, rename
+`tokensave.exe.cargo-upgrade-backup` to `tokensave.exe` in the Cargo `bin`
+directory. If both files exist, verify the installed version and keep or
+remove the backup before retrying.
+
+For a manual `cargo install` upgrade, close all agents using the target
+installation and pause automatic restarts until Cargo finishes. Run Cargo with
+the original source, features, and install root.
+
 ## Versioning and upgrades
 
 tokensave version numbers look like SemVer but **do not follow it**: the component that changes encodes the maintenance the update requires, which tokensave performs automatically on the next launch — you never run a reinstall or reindex by hand.

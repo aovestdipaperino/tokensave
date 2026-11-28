@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Coordinate shutdown and executable replacement for Windows Cargo upgrades through the repository upgrade helper (Refs #1203).
 - Remove unused imports that produced build warnings in PowerShell hooks and the MCP server (Refs #1197).
 
 ## [7.18.0] - 2026-11-28
