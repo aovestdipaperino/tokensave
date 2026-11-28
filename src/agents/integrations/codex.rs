@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::agents::codex_home_dir;
 use crate::errors::{Result, TokenSaveError};
 
 use super::*;
