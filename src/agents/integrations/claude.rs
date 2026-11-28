@@ -105,6 +105,11 @@ impl AgentIntegration for ClaudeIntegration {
         doctor_check_local_config(dc, &ctx.project_path);
     }
 
+    fn healthcheck_project(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) -> bool {
+        let mcp_path = ctx.project_path.join(".mcp.json");
+        doctor_check_local_mcp_json(dc, &mcp_path)
+    }
+
     fn is_detected(&self, home: &Path) -> bool {
         claude_config_dir(home).is_dir()
     }

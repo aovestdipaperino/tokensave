@@ -95,13 +95,16 @@ By default `tokensave install` registers the MCP server in your **global** agent
 
 ```bash
 tokensave install --local --agent codex
+tokensave install --local --agent copilot
 tokensave install --local --agent claude
 tokensave install --local --agent omp
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, codex, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, codex, copilot, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
 
 Run the Codex local install from the repository root to register MCP in `.codex/config.toml`. Check the configured executable path before sharing the file with teammates. Open a new Codex session in a trusted project to load it. The user-level command installs the shell hook and global prompt rules. Doctor reports project MCP registration separately from user-level diagnostics.
+
+Run the Copilot local install from the repository root to register Copilot CLI MCP in `.github/mcp.json`. Start Copilot CLI in a trusted checkout. Copilot gives a same-name entry in `.mcp.json` precedence over this registration. Doctor reports a root-level overlap. Use the user-level install for the VS Code and JetBrains integrations.
 
 Preview a project-local uninstall with `tokensave uninstall --local --dry-run`. Run it again without `--dry-run` to disconnect those integrations.
 
