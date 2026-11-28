@@ -73,9 +73,18 @@ fn test_xaml_event_handlers_emit_calls_refs() {
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .map(|r| r.reference_name.as_str())
         .collect();
-    assert!(calls.contains(&"OnFileClicked"), "calls: {calls:?}");
-    assert!(calls.contains(&"OnSaveClicked"), "calls: {calls:?}");
-    assert!(calls.contains(&"OnSearchChanged"), "calls: {calls:?}");
+    assert!(
+        calls.contains(&"xaml::MyApp.Views.MainView::OnFileClicked"),
+        "calls: {calls:?}"
+    );
+    assert!(
+        calls.contains(&"xaml::MyApp.Views.MainView::OnSaveClicked"),
+        "calls: {calls:?}"
+    );
+    assert!(
+        calls.contains(&"xaml::MyApp.Views.MainView::OnSearchChanged"),
+        "calls: {calls:?}"
+    );
     // Bindings and commented-out handlers must not leak.
     assert!(!calls.contains(&"NotReal"), "calls: {calls:?}");
 }
@@ -124,5 +133,23 @@ fn test_xaml_binding_values_are_not_handlers() {
             .any(|r| r.reference_kind == EdgeKind::Calls),
         "binding expressions must not emit Calls refs: {:?}",
         result.unresolved_refs
+    );
+}
+
+#[test]
+fn test_xaml_binding_requires_explicit_type_and_simple_path() {
+    let result = extract(
+        r#"<TextBlock xmlns:vm="using:App.ViewModels" x:DataType="vm:Main"
+             Text="{Binding Message}" Tag="{Binding Owner.Name}" />"#,
+    );
+    let bindings: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|reference| reference.reference_name.starts_with("xaml::"))
+        .map(|reference| (reference.reference_name.as_str(), &reference.reference_kind))
+        .collect();
+    assert_eq!(
+        bindings,
+        [("xaml::App.ViewModels.Main::Message", &EdgeKind::Uses)]
     );
 }

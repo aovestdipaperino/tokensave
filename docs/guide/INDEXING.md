@@ -247,3 +247,12 @@ match data.
 Narrow the path when `scan_truncated` is true. A directory filter limits
 both definitions and reference coverage. Discovery reads the indexed
 checkout and requires its graph when branch indexes are present.
+
+
+### XAML relationships
+
+XAML and AXAML views can link to a uniquely matched C# code-behind class
+and its event handlers using `x:Class`. Simple property and command bindings
+can link to a C# field or property when the same element declares
+`x:DataType` and its CLR namespace alias. Nested paths, inherited data contexts,
+and binding options require manual inspection.
