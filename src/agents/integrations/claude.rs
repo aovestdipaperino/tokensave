@@ -13,6 +13,10 @@ use crate::errors::Result;
 
 use super::*;
 
+mod claude_settings {
+    pub(super) const DISABLE_ALL_HOOKS: &str = "disableAllHooks";
+}
+
 /// Claude Code agent.
 pub struct ClaudeIntegration;
 
@@ -921,6 +925,12 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
     if claude_hooks_disabled(home) {
         // #693: the opt-out is honored, not repaired.
         dc.pass("Claude Code hooks disabled in config (claude_hooks = false)");
+    } else if settings[claude_settings::DISABLE_ALL_HOOKS].as_bool() == Some(true) {
+        dc.warn(&format!(
+            "Claude Code user settings set {} = true in {}. Hook checks and repairs skipped.",
+            claude_settings::DISABLE_ALL_HOOKS,
+            settings_path.display()
+        ));
     } else {
         doctor_check_hook(dc, &settings);
         if !dc.read_only {

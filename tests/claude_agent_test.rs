@@ -1002,6 +1002,40 @@ fn test_693_doctor_reports_disabled_and_does_not_repair() {
 }
 
 #[test]
+fn doctor_leaves_user_disabled_hooks_unrepaired() {
+    let dir = TempDir::new().expect("home");
+    let home = dir.path();
+    ClaudeIntegration
+        .install(&make_install_ctx_with_real_bin(home))
+        .expect("install Claude integration");
+
+    let settings_path = home.join(".claude").join("settings.json");
+    let mut settings = read_json(&settings_path);
+    settings["disableAllHooks"] = serde_json::Value::Bool(true);
+    settings["hooks"]
+        .as_object_mut()
+        .expect("hooks")
+        .remove("Stop");
+    let original = settings.to_string();
+    std::fs::write(&settings_path, &original).expect("write user settings");
+
+    let mut dc = DoctorCounters::new();
+    ClaudeIntegration.healthcheck(
+        &mut dc,
+        &HealthcheckContext {
+            home: home.to_path_buf(),
+            project_path: home.to_path_buf(),
+        },
+    );
+    assert_eq!(dc.issues, 0);
+    assert!(dc.warnings > 0);
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("settings"),
+        original
+    );
+}
+
+#[test]
 fn test_693_hooks_enabled_by_default_writes_hooks() {
     // No config.toml at all: the default stays hooks-on, so existing installs
     // and the hermetic temp-home tests are unaffected.
