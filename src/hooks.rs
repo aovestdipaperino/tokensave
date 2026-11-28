@@ -232,13 +232,7 @@ pub fn hook_pre_tool_use_codex() {
             hook_output
                 .and_then(|output| output.get("permissionDecision"))
                 .and_then(serde_json::Value::as_str)
-        })
-        .unwrap_or("allow");
-    let permission = match permission {
-        "deny" => "deny",
-        "ask" => "ask",
-        _ => "allow",
-    };
+        });
     let reason = hook_output
         .and_then(|output| output.get("permissionDecisionReason"))
         .and_then(serde_json::Value::as_str)
@@ -249,8 +243,10 @@ pub fn hook_pre_tool_use_codex() {
         });
     let mut output = serde_json::json!({
         "hookEventName": "PreToolUse",
-        "permissionDecision": permission,
     });
+    if let Some(permission @ ("deny" | "ask")) = permission {
+        output["permissionDecision"] = serde_json::json!(permission);
+    }
     if let Some(reason) = reason {
         output["permissionDecisionReason"] = serde_json::json!(reason);
     }
@@ -339,7 +335,12 @@ fn evaluate_pre_tool_use_event(
             String::new()
         };
     }
-    if !advise_on_bash && event.get("tool_name").and_then(Value::as_str) == Some("shell_command") {
+    if !advise_on_bash
+        && matches!(
+            event.get("tool_name").and_then(Value::as_str),
+            Some("Bash" | "shell_command")
+        )
+    {
         let shell = tool_input.get("shell").and_then(Value::as_str);
         if shell.map_or(cfg!(windows), powershell::is_shell) {
             if let Some(advice) = tool_input
@@ -349,10 +350,8 @@ fn evaluate_pre_tool_use_event(
             {
                 return build_search_advice(&advice);
             }
-            if shell.is_some() {
-                return String::new();
-            }
         }
+        return String::new();
     }
     evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }

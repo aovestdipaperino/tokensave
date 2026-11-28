@@ -3,10 +3,12 @@
 //!
 //! Handles registration of the tokensave MCP server in Codex's config
 //! file (`~/.codex/config.toml`), per-tool auto-approval settings,
-//! and prompt rules via `AGENTS.md`. Codex has no hook system.
+//! the PreToolUse shell hook, and prompt rules via `AGENTS.md`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use serde_json::{json, Value};
 
 use crate::errors::{Result, TokenSaveError};
 
@@ -37,6 +39,11 @@ mod codex_config {
     pub const PROBE_GRACE_SECS: u64 = 10;
     /// File stem of a command the doctor probe is willing to launch.
     pub const TOKENSAVE_COMMAND_STEM: &str = "tokensave";
+    pub const HOOKS_FILE: &str = "hooks.json";
+    pub const HOOKS_KEY: &str = "hooks";
+    pub const PRE_TOOL_USE: &str = "PreToolUse";
+    pub const SHELL_MATCHER: &str = "^(Bash|shell_command)$";
+    pub const SHELL_HOOK: &str = "hook-pre-tool-use-codex";
 }
 
 /// `OpenAI` Codex CLI agent.
@@ -57,6 +64,10 @@ impl AgentIntegration for CodexIntegration {
         let config_path = codex_dir.join("config.toml");
 
         install_mcp_server(&config_path, &ctx.tokensave_bin, ctx)?;
+        install_shell_hook(
+            &codex_dir.join(codex_config::HOOKS_FILE),
+            &ctx.tokensave_bin,
+        )?;
 
         let agents_md = codex_dir.join("AGENTS.md");
         install_prompt_rules(&agents_md)?;
@@ -65,6 +76,7 @@ impl AgentIntegration for CodexIntegration {
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
         crate::agent_note!("  2. Start a new Codex session — tokensave tools are now available");
+        crate::agent_note!("  3. Use /hooks in Codex to review and trust the TokenSave shell hook");
         Ok(())
     }
 
@@ -80,6 +92,11 @@ impl AgentIntegration for CodexIntegration {
 
         let agents_md = codex_dir.join("AGENTS.md");
         uninstall_prompt_rules(&agents_md);
+        let hooks_path = codex_dir.join(codex_config::HOOKS_FILE);
+        let mut hooks = load_json_file_strict(&hooks_path)?;
+        if remove_shell_hook(&mut hooks) {
+            write_json_file(&hooks_path, &hooks)?;
+        }
 
         crate::agent_note!();
         crate::agent_note!("Uninstall complete. Tokensave has been removed from Codex CLI.");
@@ -103,6 +120,12 @@ impl AgentIntegration for CodexIntegration {
 
         let agents_md = codex_dir.join("AGENTS.md");
         plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        plan.json(
+            "Codex shell hook",
+            &codex_dir.join(codex_config::HOOKS_FILE),
+            false,
+            remove_shell_hook,
+        );
         Ok(())
     }
 
@@ -120,6 +143,7 @@ impl AgentIntegration for CodexIntegration {
         }) {
             doctor_check_launch(dc, &server, &ctx.project_path);
         }
+        doctor_check_shell_hook(dc, &codex_dir.join(codex_config::HOOKS_FILE));
         doctor_check_prompt(dc, &codex_dir);
     }
 
@@ -613,4 +637,128 @@ fn doctor_probe_handshake(
 fn doctor_check_prompt(dc: &mut DoctorCounters, codex_dir: &Path) {
     let agents_md = codex_dir.join("AGENTS.md");
     check_shared_rules_block(dc, &agents_md, "codex");
+}
+
+fn is_shell_hook(handler: &Value) -> bool {
+    handler["type"] == "command"
+        && handler["command"]
+            .as_str()
+            .and_then(|command| command.rsplit_once(' '))
+            .is_some_and(|(binary, subcommand)| {
+                subcommand == codex_config::SHELL_HOOK
+                    && Path::new(binary.trim_start_matches("& ").trim_matches(['\'', '"']))
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| {
+                            stem.eq_ignore_ascii_case(codex_config::TOKENSAVE_COMMAND_STEM)
+                        })
+            })
+}
+
+fn remove_shell_hook(config: &mut Value) -> bool {
+    let Some(groups) = config
+        .get_mut(codex_config::HOOKS_KEY)
+        .and_then(|hooks| hooks.get_mut(codex_config::PRE_TOOL_USE))
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut changed = false;
+    groups.retain_mut(|group| {
+        let Some(handlers) = group
+            .get_mut(codex_config::HOOKS_KEY)
+            .and_then(Value::as_array_mut)
+        else {
+            return true;
+        };
+        let before = handlers.len();
+        handlers.retain(|handler| !is_shell_hook(handler));
+        let removed = handlers.len() != before;
+        changed |= removed;
+        !removed || !handlers.is_empty()
+    });
+    changed
+}
+
+fn install_shell_hook(path: &Path, binary: &str) -> Result<()> {
+    let mut config = load_json_file_strict(path)?;
+    remove_shell_hook(&mut config);
+    let invalid = || TokenSaveError::Config {
+        message: format!("Invalid Codex hook configuration in {}", path.display()),
+    };
+    let hooks = config
+        .as_object_mut()
+        .ok_or_else(invalid)?
+        .entry(codex_config::HOOKS_KEY)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(invalid)?;
+    let groups = hooks
+        .entry(codex_config::PRE_TOOL_USE)
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(invalid)?;
+    let quoted = if cfg!(windows) {
+        format!("& '{}'", binary.replace('\'', "''"))
+    } else {
+        format!("'{}'", binary.replace('\'', "'\\''"))
+    };
+    let command = format!("{quoted} {}", codex_config::SHELL_HOOK);
+    groups.push(json!({
+        "matcher": codex_config::SHELL_MATCHER,
+        "hooks": [{"type": "command", "command": command}]
+    }));
+    write_json_file(path, &config)
+}
+
+fn doctor_check_shell_hook(dc: &mut DoctorCounters, path: &Path) {
+    match load_json_file_strict(path) {
+        Ok(config) => {
+            let configured = config[codex_config::HOOKS_KEY][codex_config::PRE_TOOL_USE]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|group| {
+                    group["matcher"] == codex_config::SHELL_MATCHER
+                        && group[codex_config::HOOKS_KEY]
+                            .as_array()
+                            .is_some_and(|handlers| handlers.iter().any(is_shell_hook))
+                });
+            if configured {
+                dc.pass("Codex PreToolUse shell hook configured");
+                dc.info("Use /hooks in Codex to confirm it is enabled and trusted");
+            } else {
+                dc.warn("Codex PreToolUse shell hook missing; run tokensave install --agent codex");
+            }
+        }
+        Err(error) => dc.fail(&format!("Codex hook configuration: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_hook_install_is_idempotent_and_removal_preserves_other_handlers() -> Result<()> {
+        let dir = tempfile::tempdir().map_err(|error| TokenSaveError::Config {
+            message: error.to_string(),
+        })?;
+        let path = dir.path().join(codex_config::HOOKS_FILE);
+        let original = json!({
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [{"type":"command","command":"other"}]}],
+                "Stop": [{"hooks": [{"type":"command","command":"other-stop"}]}]
+            }
+        });
+        write_json_file(&path, &original)?;
+        install_shell_hook(&path, "path with spaces/tokensave")?;
+        let first = load_json_file_strict(&path)?;
+        install_shell_hook(&path, "path with spaces/tokensave")?;
+        let mut second = load_json_file_strict(&path)?;
+        assert_eq!(first, second);
+        assert!(remove_shell_hook(&mut second));
+        assert_eq!(second, original);
+        Ok(())
+    }
 }
