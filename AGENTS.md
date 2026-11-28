@@ -17,6 +17,9 @@ same pointer files on `master` and `beta`.
   repository. This rule applies to every fork. Use a work branch instead of
   working directly on `master`, unless the user explicitly requests a direct
   commit.
+- When the user explicitly requests a direct upstream push, push the intended
+  commit to the requested branch in `aovestdipaperino/tokensave`. Use a
+  fast-forward push and skip the fork and pull request workflow.
 - Name branches `<type>/<short-description>`, using the same Conventional
   Commits types as commit messages (for example `feat/dart-annotations`,
   `fix/utf16-sync`, `refactor/resolver-lookup`, `ci/release-workflow`). Keep
