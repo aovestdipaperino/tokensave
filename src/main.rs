@@ -173,8 +173,17 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
     )
 }
 
+#[cfg(windows)]
+mod windows_upgrade;
+
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    if let Err(error) = windows_upgrade::watch() {
+        eprintln!("TokenSave startup: {error}");
+        std::process::exit(1);
+    }
+
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 2
         && args.iter().any(|arg| arg == "--version")

@@ -99,6 +99,7 @@ jobs:
               - 'benchmarks/**'
               - 'examples/**'
               - '**/*.rs'
+              - 'scripts/upgrade-windows.ps1'
             pi:
               - *ci
               - 'src/agents/integrations/pi_extension.ts'
@@ -164,6 +165,12 @@ jobs:
         # transport suites (mcp_server_test, report_savings_test, ...); it
         # adds no dependencies, so this is a superset of the plain run.
         run: cargo test --workspace --locked --features test-transport
+
+      - name: Test Windows Cargo upgrades
+        if: matrix.name == 'Windows'
+        env:
+          TOKENSAVE_TEST_EXE: target/debug/tokensave.exe
+        run: python tests/windows_cargo_upgrade_test.py
 
   clippy:
     name: Clippy
