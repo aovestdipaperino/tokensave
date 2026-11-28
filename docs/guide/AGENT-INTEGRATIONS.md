@@ -124,7 +124,8 @@ above. Herdr needs no additional MCP configuration.
 Open the Herdr workspace at the checkout root and start Codex in a shell
 pane, or run `herdr agent start search --kind codex --pane <pane-id>`
 from a terminal in the same Herdr session. With project-local configuration,
-trust the checkout in Codex first. In Codex, run `/mcp` to check that
+trust the project in Codex first. For a linked worktree, Codex may ask you
+to trust the main checkout. In Codex, run `/mcp` to check that
 TokenSave loaded, then ask Codex to use `tokensave_search` for a symbol in
 the checkout.
 
