@@ -339,3 +339,33 @@ async fn codex_bash_events_advise_on_standalone_and_compound_powershell_searches
         );
     }
 }
+
+#[test]
+fn uninstall_targets_the_codex_home_override() {
+    let home = TempDir::new().expect("home");
+    let custom = home.path().join("custom-codex");
+    let original = "[mcp_servers.tokensave]\ncommand = \"tokensave\"\nargs = [\"serve\"]\n";
+    for dir in [home.path().join(".codex"), custom.clone()] {
+        std::fs::create_dir(&dir).expect("create Codex home");
+        std::fs::write(dir.join("config.toml"), original).expect("write MCP config");
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("CODEX_HOME", &custom)
+        .args(["uninstall", "--agent", "codex"])
+        .output()
+        .expect("run uninstall");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !custom.join("config.toml").exists()
+            || !std::fs::read_to_string(custom.join("config.toml"))
+                .expect("read custom config")
+                .contains("mcp_servers.tokensave")
+    );
+    assert_eq!(
+        std::fs::read_to_string(config_path(home.path())).expect("default config"),
+        original
+    );
+}

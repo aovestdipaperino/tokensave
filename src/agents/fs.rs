@@ -695,6 +695,18 @@ pub fn vscode_insiders_data_dir(home: &Path) -> PathBuf {
     }
 }
 
+mod codex_paths {
+    pub(super) const HOME_ENV: &str = "CODEX_HOME";
+    pub(super) const DEFAULT_DIR: &str = ".codex";
+}
+
+/// Returns the Codex CLI config and session directory.
+pub(crate) fn codex_home_dir(home: &Path) -> PathBuf {
+    std::env::var_os(codex_paths::HOME_ENV)
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| home.join(codex_paths::DEFAULT_DIR), PathBuf::from)
+}
+
 /// Returns the GitHub Copilot CLI config directory.
 pub fn copilot_cli_dir(home: &Path) -> PathBuf {
     std::env::var_os(copilot_paths::HOME_ENV)

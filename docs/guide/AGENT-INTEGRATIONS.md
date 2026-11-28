@@ -116,7 +116,9 @@ JetBrains use their own configuration directories.
 ## Codex CLI shell hook
 
 Run `tokensave install --agent codex` to register the shell hook in
-`~/.codex/hooks.json`. Start a new Codex session and use `/hooks` to review
+`hooks.json` in the Codex home directory. TokenSave uses `CODEX_HOME` when set
+and nonempty, and otherwise uses `~/.codex`. The same directory supplies user
+configuration and session statistics. Start a new Codex session and use `/hooks` to review
 and trust the TokenSave `PreToolUse` entry. Run `tokensave doctor --agent codex`
 to check hook registration separately from MCP startup. Codex reports the hook's
 trust and enablement state in `/hooks`.

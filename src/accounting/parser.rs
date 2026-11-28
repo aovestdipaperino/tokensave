@@ -525,7 +525,7 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
     stats.coverage.push(copilot.coverage);
 
     // Codex CLI ingestion from ~/.codex/sessions
-    let codex_root = home.join(".codex").join("sessions");
+    let codex_root = crate::agents::codex_home_dir(home).join("sessions");
     let codex = crate::accounting::codex::ingest_dir(gdb, &codex_root).await;
 
     stats.turns_updated = stats.turns_updated.saturating_add(codex.rows_changed);
