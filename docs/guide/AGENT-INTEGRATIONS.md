@@ -106,6 +106,19 @@ To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git
 
 For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md#connecting-to-your-agent).
 
+
+## Codex CLI shell hook
+
+Run `tokensave install --agent codex` to register the shell hook in
+`~/.codex/hooks.json`. Start a new Codex session and use `/hooks` to review
+and trust the TokenSave `PreToolUse` entry. Run `tokensave doctor --agent codex`
+to check hook registration separately from MCP startup. Codex reports the hook's
+trust and enablement state in `/hooks`.
+
+The Codex pre-tool hook parses PowerShell commands in-process when the shell is identified as Windows PowerShell or pwsh. On Windows it also checks shell commands that omit the shell name. A standalone `Select-String` or `sls` with a literal pattern and an existing path inside the indexed project can get advisory context identifying the search's UTF-8 byte range, including when it is a separate statement in a compound command. Pipelines, conditional chains, nested groups, dynamic arguments and parse errors receive no PowerShell advice. The hook leaves execution and permissions to the host.
+
+Uninstall removes the TokenSave entry and preserves other hooks.
+
 ## What install writes for Claude Code
 
 ### MCP server
@@ -122,8 +135,6 @@ For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md
 ```
 
 ### PreToolUse hook
-
-The Codex pre-tool hook parses PowerShell commands in-process when the shell is identified as Windows PowerShell or pwsh. On Windows it also checks shell commands that omit the shell name. A standalone `Select-String` or `sls` with a literal pattern and an existing path inside the indexed project can get advisory context identifying the search's UTF-8 byte range, including when it is a separate statement in a compound command. Pipelines, conditional chains, nested groups, dynamic arguments and parse errors receive no PowerShell advice. The hook leaves execution and permissions to the host.
 
 The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, provides guidance for eligible Grep searches, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
 
