@@ -166,40 +166,23 @@ mirrored to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki
 
 | Topic | What it covers |
 |---|---|
-| `TOKENSAVE_BENCH_REPOS_DIR` | **Required.** Root directory where each repo is cloned to `$DIR/<repo-name>/`. |
-| `TOKENSAVE_BENCH_REPOS` | Comma-separated subset of repo names to bench, e.g. `TOKENSAVE_BENCH_REPOS=emacs,scipy`. Defaults to all four. |
-| `TOKENSAVE_BENCH_SKIP_CLONE` | If set, the bench fails fast for any repo not already at its pinned ref instead of fetching. Useful in CI / offline runs. |
+| [Installation and Upgrades](docs/guide/INSTALLATION.md) | Language tiers, self-upgrade and channels, versioning, building from source |
+| [Agent Integrations](docs/guide/AGENT-INTEGRATIONS.md) | Supported agents, project-local setup, what install writes |
+| [Indexing and Freshness](docs/guide/INDEXING.md) | Project discovery, index freshness, crash-resilient sync, custom extensions |
+| [MCP Tools](docs/guide/MCP-TOOLS.md) | The 80+ tools by category, cross-project queries, MCP resources |
+| [Multi-Branch Indexing](docs/guide/MULTI-BRANCH.md) | Per-branch graphs, automatic tracking, branch quality regressions |
+| [Token Tracking and Cost](docs/guide/TOKEN-TRACKING.md) | Savings ledger, cost reports, live monitor, memory diagnostics |
+| [Performance Profiling](docs/PROFILING.md) | Opt-in latency attribution for database operations, MCP tool phases and indexing |
+| [CLI Reference](docs/guide/CLI-REFERENCE.md) | Every command at a glance |
+| [Open Knowledge Format](docs/guide/OKF.md) | Validate, export and import OKF bundles, and search imported knowledge |
+| [Supported Languages](docs/guide/LANGUAGES.md) | Language tiers, extractor development, and known limitations |
+| [Network Calls and Privacy](docs/guide/PRIVACY.md) | What leaves your machine and how to opt out |
+| [Troubleshooting](docs/guide/TROUBLESHOOTING.md) | `tokensave doctor` and common problems |
+| [Benchmarks](docs/guide/BENCHMARKS.md) | Retrieval-savings and performance benchmarks |
+| [Comparisons](docs/guide/COMPARISONS.md) | tokensave compared with CodeGraph and alternatives |
 
-**Filtering benchmarks** uses the standard criterion CLI — for example, only the `search` tool on `scipy`:
-
-```bash
-cargo bench --bench large_repos -- 'scipy/tokensave_search'
-```
-
-Reports (HTML + raw samples) land under `target/criterion/`.
-
-To change the pinned refs (e.g. to a newer release or a specific SHA), edit `REPOS` in `benches/repos.rs` and delete the corresponding `$TOKENSAVE_BENCH_REPOS_DIR/<repo>/.bench-ref` marker so the next run re-fetches. If you skip the post-run cleanup (e.g. you `Ctrl-C` mid-bench), running `git stash --include-untracked && git stash drop` inside each repo dir restores it manually.
-
-### MCP test-matrix probe (scripts/mcp_probe)
-
-`scripts/mcp_probe/` is a Python harness that drives `tokensave serve` over stdio against a configurable set of real repos and exercises **every read-only MCP tool with 5 query variants per language**, producing a per-tool / per-repo status table. Same harness serves two purposes:
-
-- **Regression sweep.** New language support, new tool, or a refactor — re-run the matrix and any cell that newly errors, times out, or returns empty results stands out as a 🚩.
-- **Perf probe.** Per-call timings are logged in TSV; the same fixed corpus of repos doubles as a coarse cross-version comparison. The current `tokensave_inheritance_depth` cycle bug was found by this harness when a single tool on polkadot-sdk timed out at >60 s.
-
-**Layout** — `probe.py` is the driver (id-matched JSON-RPC so a slow tool can't poison subsequent calls), `isolated.py` re-runs a single tool with a fresh server per call (escapes server queueing), `build_matrix.py` reads the TSV and emits markdown, `tools/<lang>.py` modules contribute per-language query sets (Rust shipped; add Python/Go/… by dropping a new module), `repos.toml` lists target repos (override via `$TOKENSAVE_PROBE_REPOS`).
-
-**Quick run:**
-
-```bash
-cargo build --release --bin tokensave
-python3 scripts/mcp_probe/probe.py
-python3 scripts/mcp_probe/build_matrix.py > matrix.md
-```
-
-Output cells are `✓ 5/5` (clean), `🐛 e/N` (errors), `⏱ N/N` (timeouts), `∅ E/N` (empty), `🐢 ok/slow` (>10 s calls). Any cell carrying an error or timeout earns a 🚩 in the rightmost column. Per-call detail with the first 100 chars of each error landS in the TSV log for follow-up.
-
-Different from the criterion bench above: criterion measures per-iteration latency for a focused tool set on pinned refs and produces statistical reports under `target/criterion/`; `mcp_probe` exercises every tool with a broader query set on whatever repos you point it at, optimising for breadth of coverage rather than measurement precision.
+The long-form [User Guide](docs/USER-GUIDE.md) walks through everyday use in more
+depth. To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -1022,23 +1005,6 @@ If a project is too large and tokensave uses too much RAM, you can disable the M
 You can also set it globally via the shell (`TOKENSAVE_DISABLE_SERVER=true claude`), but this disables the tokensave MCP server for every project in the session.
 
 `DISABLE_TOKENSAVE=true` remains supported as a deprecated compatibility alias for configurations created before this variable was namespaced.
-| [Installation and Upgrades](docs/guide/INSTALLATION.md) | Language tiers, self-upgrade and channels, versioning, building from source |
-| [Agent Integrations](docs/guide/AGENT-INTEGRATIONS.md) | Supported agents, project-local setup, what install writes |
-| [Indexing and Freshness](docs/guide/INDEXING.md) | Project discovery, index freshness, crash-resilient sync, custom extensions |
-| [MCP Tools](docs/guide/MCP-TOOLS.md) | The 80+ tools by category, cross-project queries, MCP resources |
-| [Multi-Branch Indexing](docs/guide/MULTI-BRANCH.md) | Per-branch graphs, automatic tracking, branch quality regressions |
-| [Token Tracking and Cost](docs/guide/TOKEN-TRACKING.md) | Savings ledger, cost reports, live monitor, memory diagnostics |
-| [Performance Profiling](docs/PROFILING.md) | Opt-in latency attribution for database operations, MCP tool phases and indexing |
-| [CLI Reference](docs/guide/CLI-REFERENCE.md) | Every command at a glance |
-| [Open Knowledge Format](docs/guide/OKF.md) | Validate, export and import OKF bundles, and search imported knowledge |
-| [Supported Languages](docs/guide/LANGUAGES.md) | 50+ languages and their feature tiers |
-| [Network Calls and Privacy](docs/guide/PRIVACY.md) | What leaves your machine and how to opt out |
-| [Troubleshooting](docs/guide/TROUBLESHOOTING.md) | `tokensave doctor` and common problems |
-| [Benchmarks](docs/guide/BENCHMARKS.md) | Retrieval-savings and performance benchmarks |
-| [Comparisons](docs/guide/COMPARISONS.md) | tokensave compared with CodeGraph and alternatives |
-
-The long-form [User Guide](docs/USER-GUIDE.md) walks through everyday use in more
-depth. To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
