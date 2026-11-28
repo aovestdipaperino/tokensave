@@ -59,7 +59,7 @@ impl AgentIntegration for CodexIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let codex_dir = ctx.home.join(".codex");
+        let codex_dir = codex_home_dir(&ctx.home);
         std::fs::create_dir_all(&codex_dir).ok();
         let config_path = codex_dir.join("config.toml");
 
@@ -81,7 +81,7 @@ impl AgentIntegration for CodexIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let codex_dir = ctx.home.join(".codex");
+        let codex_dir = codex_home_dir(&ctx.home);
         let config_path = codex_dir.join("config.toml");
 
         if has_user_approvals(&config_path, ctx) {
@@ -109,7 +109,7 @@ impl AgentIntegration for CodexIntegration {
         ctx: &InstallContext,
         plan: &mut crate::agents::uninstall::UninstallPlan,
     ) -> Result<()> {
-        let codex_dir = ctx.home.join(".codex");
+        let codex_dir = codex_home_dir(&ctx.home);
         let config_path = codex_dir.join("config.toml");
 
         if has_user_approvals(&config_path, ctx) {
@@ -131,7 +131,7 @@ impl AgentIntegration for CodexIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
-        let codex_dir = ctx.home.join(".codex");
+        let codex_dir = codex_home_dir(&ctx.home);
         let config_path = codex_dir.join("config.toml");
         doctor_check_config(dc, &config_path, permissions_management_enabled(&ctx.home));
         if let Some(server) = load_toml_file(&config_path).ok().and_then(|config| {
@@ -148,15 +148,15 @@ impl AgentIntegration for CodexIntegration {
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".codex").is_dir()
+        codex_home_dir(home).is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".codex").join("config.toml"))
+        Some(codex_home_dir(home).join("config.toml"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let config = home.join(".codex").join("config.toml");
+        let config = codex_home_dir(home).join("config.toml");
         if !config.exists() {
             return false;
         }
