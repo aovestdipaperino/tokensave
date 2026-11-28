@@ -11,6 +11,7 @@ use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
 
 pub(crate) mod constants;
+mod literals;
 mod resources;
 pub use constants::DEFAULT_LIMIT;
 
@@ -21,6 +22,7 @@ pub enum Query {
     Call,
     Attribute,
     Comparison,
+    Strings,
     Resources,
     MissingTranslations,
     UnusedResources,
@@ -142,6 +144,20 @@ pub async fn query(
         walk(tree.root_node(), |node| {
             if is_resources {
                 resources.reference(&file, &source, node);
+            } else if matches!(kind, Query::Strings) {
+                if let Some(category) = literals::category(source.as_str(), node)
+                    .filter(|category| name.is_none_or(|name| *category == name))
+                {
+                    if matched >= offset && items.len() <= limit {
+                        let mut item = location(&file, &source, node, text(&source, node));
+                        item["category"] = json!(category);
+                        item["language"] = json!("C#");
+                        item["value_truncated"] =
+                            json!(text(&source, node).chars().count() > constants::MAX_TEXT);
+                        items.push(item);
+                    }
+                    matched += 1;
+                }
             } else if let Some(target) =
                 target(node, kind, &source).filter(|target| name.is_none_or(|name| *target == name))
             {

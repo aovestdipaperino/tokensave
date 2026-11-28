@@ -238,6 +238,11 @@ findings directly. Common C# resource manager calls, generated property accesses
 Dynamic keys, custom class names that differ from the RESX stem, indirect references, other XML
 sections and external configuration files may require manual review.
 
+Run `tokensave dotnet strings --path src` to list C# string literal source text.
+Use the name filter to select a category such as `ui`, `dialog`, `exception`,
+`logging`, `configuration-key`, `path`, or `unknown`. Categories are based
+on syntax. Results include source ranges and indicate when the text is clipped.
+
 MCP exposes the same modes through `tokensave_dotnet` in
 `tokensave_more` area `navigate`. Both interfaces accept an indexed
 project-relative path with `/` separators and an exact name or key. Continue with the reported

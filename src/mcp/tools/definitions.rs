@@ -1318,7 +1318,7 @@ fn def_dotnet() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["assignment", "call", "attribute", "comparison", "resources", "missing-translations", "unused-resources"]},
+                "kind": {"type": "string", "enum": ["assignment", "call", "attribute", "comparison", "strings", "resources", "missing-translations", "unused-resources"]},
                 "path": {"type": "string", "description": "Indexed project-relative file or directory prefix"},
                 "name": {"type": "string", "description": "Exact syntax target or key"},
                 "offset": {"type": "integer", "minimum": 0},
