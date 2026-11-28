@@ -2091,7 +2091,7 @@ fn has_chained_command(command: &str) -> bool {
                         chars.next();
                     }
                 }
-                '&' | '|' | ';' | '`' | '>' => return true,
+                '&' | '|' | ';' | '`' | '<' | '>' => return true,
                 _ => {}
             }
         }
@@ -2201,6 +2201,7 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     let mut targets: Vec<String> = Vec::new();
     let mut git_trees: Vec<String> = Vec::new();
     let mut after_dashdash = false;
+    let mut grep_recursive = false;
     let mut globs: Vec<String> = Vec::new();
     let mut ty: Option<String> = None;
     let mut iter = tokens.into_iter().peekable();
@@ -2219,7 +2220,21 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
             after_dashdash = true;
             continue;
         }
+        // A lone dash after the pattern is stdin, even when files follow.
+        // A lookup of indexed symbols cannot reproduce that mixed input.
+        if tok == "-" && pattern.is_some() && !is_git {
+            return None;
+        }
         if tok.starts_with('-') {
+            if tool == "grep" {
+                grep_recursive |= matches!(tok.as_str(), "--recursive" | "--dereference-recursive")
+                    || tok.strip_prefix('-').is_some_and(|flags| {
+                        flags.contains(['r', 'R'])
+                            && flags
+                                .chars()
+                                .all(|flag| constants::GREP_NO_VALUE_FLAGS.contains(flag))
+                    });
+            }
             if (tok == "-e" || tok == "--regexp") && pattern.is_none() {
                 if let Some(p) = iter.next() {
                     pattern = Some(p);
@@ -2280,6 +2295,13 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
         }
     }
 
+    if !is_git && targets.iter().any(|target| target == "-") {
+        return None;
+    }
+    // grep with no file operand reads stdin unless recursive search was requested.
+    if tool == "grep" && !grep_recursive && targets.is_empty() {
+        return None;
+    }
     Some(GrepInvocation {
         tool,
         pattern: pattern?,

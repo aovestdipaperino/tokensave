@@ -162,6 +162,8 @@ When Claude Code user settings set `disableAllHooks` to `true`, `tokensave docto
 
 The search hook leaves shell pipelines such as `grep ... | grep -v ... | head -5` to the shell under the host's usual permissions. The original scopes, filters, ordering, result limits, and exit status are preserved.
 
+Bash searches that explicitly read stdin with `-` or an input redirect also stay native. This includes mixed searches such as `grep Symbol - src/lib.rs`. PowerShell filters over build output, such as `build-command 2>&1 | Select-String -Pattern 'error|Localization'`, receive no indexed-source advice.
+
 **Bash text searches.** The Bash hook can suggest a scoped `tokensave_search` lookup for definitions when a simple `grep`, `rg`, or `ag` command names one indexed symbol and one file or directory. Scope is expressed using the MCP tool's path substring filter. The original Bash command runs with Claude Code's usual permissions and supplies the exact matches, line numbers, and shell output. When the MCP tool is missing, disconnected, or returns stale or incomplete results, use the Bash results directly. Explicit fixed-string searches, structural patterns, and compound Bash commands run without a symbol suggestion.
 
 Searches within a single JavaScript or TypeScript file can include a `const`, `let`, `var`, or `function` declaration prefix when the name is indexed.

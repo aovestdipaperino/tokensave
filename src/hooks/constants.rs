@@ -185,3 +185,5 @@ pub(super) const POWERSHELL_MAX_COMMAND_BYTES: usize = 8 * 1024;
 pub(super) const POWERSHELL_SEARCH_NAMES: &[&str] = &["Select-String", "sls"];
 pub(super) const POWERSHELL_SHELL_NAMES: &[&str] =
     &["powershell", "powershell.exe", "pwsh", "pwsh.exe"];
+/// GNU grep short switches that take no argument and can precede `-r` or `-R` in a cluster.
+pub(super) const GREP_NO_VALUE_FLAGS: &str = "EFGPVabchilnorsvwxzHLRZqI";

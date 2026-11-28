@@ -10,6 +10,36 @@ fn verdict(command: &str) -> BashSearchVerdict {
 }
 
 #[test]
+fn stdin_and_command_output_are_not_repository_searches() {
+    for command in [
+        "git diff | grep handle_request",
+        "build-command 2>&1 | grep handle_request",
+        "grep handle_request < src/lib.rs",
+        "grep handle_request",
+        "grep handle_request <<< 'handle_request'",
+        "grep handle_request - src/lib.rs",
+        "grep handle_request -- src/lib.rs -",
+        "rg handle_request - src/lib.rs",
+    ] {
+        assert!(
+            matches!(
+                verdict(command),
+                BashSearchVerdict::NotSearch | BashSearchVerdict::Excluded(_)
+            ),
+            "{command}"
+        );
+    }
+    assert!(matches!(
+        verdict("grep handle_request src/lib.rs"),
+        BashSearchVerdict::Replaceable
+    ));
+    assert_eq!(
+        verdict("grep -nr handle_request"),
+        BashSearchVerdict::Replaceable
+    );
+}
+
+#[test]
 fn declaration_prefixed_searches_of_a_js_or_ts_file_are_replaceable() {
     for command in [
         r#"grep -n "const EXAMPLE_VALUE" src/example.js"#,

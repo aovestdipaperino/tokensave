@@ -173,6 +173,10 @@ mod tests {
 
     #[test]
     fn keeps_pipeline_output_and_dynamic_searches_native() {
+        assert!(
+            find_search("build-command 2>&1 | Select-String -Pattern 'error|Localization'")
+                .is_none()
+        );
         for command in [
             "cargo check | Select-String 'Widget'",
             "Select-String 'Widget' './file.rs' | Select-Object -First 1",
