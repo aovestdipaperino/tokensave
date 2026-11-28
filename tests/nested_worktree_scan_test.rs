@@ -6,8 +6,7 @@
 //! enter it, so the index of the main checkout held each file twice, and it
 //! held files that exist only on the branch of the worktree. Git does not
 //! treat such a directory as content of the main checkout, and the scan must
-//! not either. A nested clone and a submodule are different repositories, and
-//! the scan keeps them.
+//! not either. The scan also prunes nested clones with a .git directory.
 
 use std::path::Path;
 use std::process::Command;
@@ -173,10 +172,9 @@ async fn a_sync_removes_the_rows_of_a_directory_that_is_a_worktree() {
     assert_eq!(indexed_files(&cg).await, vec!["base.rs".to_string()]);
 }
 
-/// A nested clone and a submodule are repositories of their own. The scan
-/// enters them as before.
+/// Git pointer files for submodules still allow the scan to enter.
 #[tokio::test]
-async fn a_nested_clone_and_a_submodule_are_still_indexed() {
+async fn a_nested_clone_is_skipped_but_a_submodule_is_indexed() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     git(root, &["init", "-b", "master"]);
@@ -195,11 +193,7 @@ async fn a_nested_clone_and_a_submodule_are_still_indexed() {
     cg.index_all().await.unwrap();
     assert_eq!(
         indexed_files(&cg).await,
-        vec![
-            "base.rs".to_string(),
-            "deps/module.rs".to_string(),
-            "vendor_clone/cloned.rs".to_string()
-        ]
+        vec!["base.rs".to_string(), "deps/module.rs".to_string()]
     );
 }
 
@@ -215,4 +209,30 @@ async fn a_worktree_that_is_the_project_root_is_indexed() {
         indexed_files(&cg).await,
         vec!["base.rs".to_string(), "side_only.rs".to_string()]
     );
+}
+
+#[tokio::test]
+async fn syncing_prunes_a_new_nested_clone_and_it_can_be_indexed_separately() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    git(root, &["init", "-b", "master"]);
+    std::fs::write(root.join("base.rs"), "pub fn base() {}\n").unwrap();
+    git(root, &["add", "base.rs"]);
+    git(root, &["commit", "-m", "base"]);
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::copy(root.join("base.rs"), nested.join("base.rs")).unwrap();
+
+    let parent = TokenSave::init(root).await.unwrap();
+    parent.index_all().await.unwrap();
+    assert_eq!(indexed_files(&parent).await, ["base.rs", "nested/base.rs"]);
+
+    std::fs::remove_file(nested.join("base.rs")).unwrap();
+    git(root, &["clone", ".", "nested"]);
+    parent.sync().await.unwrap();
+    assert_eq!(indexed_files(&parent).await, ["base.rs"]);
+
+    let child = TokenSave::init(&nested).await.unwrap();
+    child.index_all().await.unwrap();
+    assert_eq!(indexed_files(&child).await, ["base.rs"]);
 }

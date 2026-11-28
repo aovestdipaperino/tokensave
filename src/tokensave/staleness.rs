@@ -118,10 +118,10 @@ impl TokenSave {
                 continue;
             };
             let abs_path = self.project_root.join(&normalized);
-            // A file below a nested worktree is outside the scan (#865). It
+            // A file below a nested Git checkout is outside the scan (#865). It
             // counts as absent: a row for it needs cleanup, and no row is
             // made for it.
-            let file_exists = abs_path.exists() && !self.is_below_nested_worktree(&normalized);
+            let file_exists = abs_path.exists() && !self.is_below_nested_checkout(&normalized);
             match self.db.get_file(&normalized).await {
                 Ok(Some(record)) => {
                     if !file_exists {

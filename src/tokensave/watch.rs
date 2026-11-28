@@ -433,7 +433,7 @@ impl TokenSave {
                     .is_some_and(is_transient_file_name);
                 if !noise
                     && !self.is_watch_internal(&rel)
-                    && !self.is_below_nested_worktree(&rel)
+                    && !self.is_below_nested_checkout(&rel)
                     && self.watch_file_in_scope(&rel, &path, &exts, ignore_cache)
                 {
                     files.push(path);

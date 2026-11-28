@@ -464,7 +464,7 @@ impl ScanDirPrune {
         // A linked worktree below the root is a second working tree of the
         // same repository (#865). No include glob re-admits it. The root is
         // exempt: a worktree with an index of its own is a project.
-        if depth > 0 && crate::config::is_linked_worktree_root(path) {
+        if depth > 0 && crate::config::is_nested_checkout_root(path) {
             return false;
         }
         let rel_str = path
@@ -1353,9 +1353,9 @@ impl TokenSave {
         Ok(RefreshOutcome::Refreshed)
     }
 
-    /// Whether the project-relative `path` lies below a linked worktree that
+    /// Whether the project-relative `path` lies below a nested Git checkout that
     /// is inside the project. The scan does not enter such a directory (#865).
-    pub(super) fn is_below_nested_worktree(&self, path: &str) -> bool {
+    pub(super) fn is_below_nested_checkout(&self, path: &str) -> bool {
         if Path::new(path).is_absolute() {
             return false;
         }
@@ -1367,7 +1367,7 @@ impl TokenSave {
                 break;
             }
             dir.push(part);
-            if crate::config::is_linked_worktree_root(&dir) {
+            if crate::config::is_nested_checkout_root(&dir) {
                 return true;
             }
         }
@@ -1404,9 +1404,9 @@ impl TokenSave {
         let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             let absolute = project_root.join(&path);
-            // A file below a nested worktree is outside the scan (#865). Its
+            // A file below a nested Git checkout is outside the scan (#865). Its
             // row is from an earlier index, so it takes the removal branch.
-            if absolute.exists() && !self.is_below_nested_worktree(&path) {
+            if absolute.exists() && !self.is_below_nested_checkout(&path) {
                 // A previously detected source can become unsupported. Targeted
                 // MCP refreshes must remove its old symbols as full sync does.
                 if self.config.language_detection.enabled
@@ -2482,7 +2482,7 @@ impl TokenSave {
                     continue;
                 }
                 // The worktree rule of the main walk applies here too (#865).
-                if self.is_below_nested_worktree(&rel_str) {
+                if self.is_below_nested_checkout(&rel_str) {
                     continue;
                 }
                 if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, &mut skipped)
@@ -2516,7 +2516,7 @@ impl TokenSave {
                     return true;
                 }
                 // The same rule as `ScanDirPrune::keeps` (#865).
-                if e.file_type().is_dir() && crate::config::is_linked_worktree_root(e.path()) {
+                if e.file_type().is_dir() && crate::config::is_nested_checkout_root(e.path()) {
                     return false;
                 }
                 // Checked before every other rule so no `include` glob or
