@@ -695,16 +695,16 @@ pub fn vscode_insiders_data_dir(home: &Path) -> PathBuf {
     }
 }
 
-mod copilot_paths {
-    pub(super) const HOME_ENV: &str = "COPILOT_HOME";
-    pub(super) const DEFAULT_DIR: &str = ".copilot";
-}
-
-/// Returns the GitHub Copilot CLI config and session directory.
+/// Returns the GitHub Copilot CLI config directory.
 pub fn copilot_cli_dir(home: &Path) -> PathBuf {
     std::env::var_os(copilot_paths::HOME_ENV)
         .filter(|path| !path.is_empty())
         .map_or_else(|| home.join(copilot_paths::DEFAULT_DIR), PathBuf::from)
+}
+
+mod copilot_paths {
+    pub(super) const HOME_ENV: &str = "COPILOT_HOME";
+    pub(super) const DEFAULT_DIR: &str = ".copilot";
 }
 
 /// Returns the GitHub Copilot `JetBrains` plugin config directory.
