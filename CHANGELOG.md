@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Remove unused imports that produced build warnings in PowerShell hooks and the MCP server (Refs #1197).
 
 ## [7.18.0] - 2026-11-28
 

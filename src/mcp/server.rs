@@ -32,8 +32,7 @@ use super::tools::{
     get_tool_definitions, handle_tool_call_with_session, is_always_load, is_disabled_tool,
     is_graph_scoped_tool, is_hidden_tool, is_read_only_tool, is_selectorless_local_graph_tool,
     is_tool_area, request_overhead_tokens, schema_overhead_tokens, settle_session_debt, tool_area,
-    without_disabled_references, SessionState, CORE_TOOLS, DISABLED_TOOL_AREAS_SETTING, MORE_TOOL,
-    TOOL_AREAS,
+    without_disabled_references, SessionState, CORE_TOOLS, MORE_TOOL, TOOL_AREAS,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
