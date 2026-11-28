@@ -961,7 +961,7 @@ fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery 
             if git_root.is_none() {
                 git_root = Some(dir.to_path_buf());
             }
-            if marker == GitMarker::Repository {
+            if marker != GitMarker::LinkedWorktree {
                 crossed_repository = true;
             }
         }
@@ -972,9 +972,10 @@ fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery 
 /// What a directory's `.git` entry says about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitMarker {
-    /// The root of a repository of its own: a `.git` directory, or a `.git`
-    /// file pointing anywhere but a `worktrees/` entry (a submodule).
-    Repository,
+    /// A checkout with its own `.git` directory.
+    RepositoryDirectory,
+    /// A `.git` pointer file outside of `worktrees/` (for example, a submodule).
+    RepositoryPointer,
     /// A linked worktree of a repository whose main checkout lives elsewhere.
     LinkedWorktree,
 }
@@ -983,7 +984,7 @@ fn git_marker(dir: &Path) -> Option<GitMarker> {
     let dot_git = dir.join(".git");
     let meta = fs::metadata(&dot_git).ok()?;
     if meta.is_dir() {
-        return Some(GitMarker::Repository);
+        return Some(GitMarker::RepositoryDirectory);
     }
     // A linked worktree's `.git` file reads `gitdir: <common-dir>/worktrees/<name>`.
     let contents = fs::read_to_string(&dot_git).ok()?;
@@ -995,21 +996,16 @@ fn git_marker(dir: &Path) -> Option<GitMarker> {
     Some(if in_worktrees {
         GitMarker::LinkedWorktree
     } else {
-        GitMarker::Repository
+        GitMarker::RepositoryPointer
     })
 }
 
-/// Whether `dir` is the root of a linked worktree: its `.git` is a file that
-/// points into the `worktrees/` directory of a repository.
-///
-/// The scan uses this to stay out of a worktree that lies inside the checkout
-/// it indexes (#865). Such a directory is a second working tree of the same
-/// repository, not content of the first. A nested clone and a submodule are
-/// repositories of their own and give `false`.
-///
-/// Costs one `stat` for a directory with no `.git` entry.
-pub(crate) fn is_linked_worktree_root(dir: &Path) -> bool {
-    git_marker(dir) == Some(GitMarker::LinkedWorktree)
+/// Whether to prune this directory when encountered below the scan root.
+pub(crate) fn is_nested_checkout_root(dir: &Path) -> bool {
+    matches!(
+        git_marker(dir),
+        Some(GitMarker::RepositoryDirectory | GitMarker::LinkedWorktree)
+    )
 }
 
 /// The root of the linked worktree that `start` is in, when the project that
