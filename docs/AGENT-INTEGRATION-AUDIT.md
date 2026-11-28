@@ -14,15 +14,26 @@ The merge commits are present in the local `origin/master` snapshot at `05ff4035
 
 ## Codex CLI project scope
 
-The Codex adapter resolves the user home for install, uninstall, dry-run planning, and health checks. It inherits the default `supports_local() == false`, so the shared CLI rejects `install --local --agent codex`. The user-level adapter already registers MCP, installs the advisory shell hook and prompt rules, and probes MCP startup in an indexed project. [Codex adapter](https://github.com/aovestdipaperino/tokensave/blob/05ff4035/src/agents/integrations/codex.rs) · [Agent trait](https://github.com/aovestdipaperino/tokensave/blob/05ff4035/src/agents/traits.rs)
+[PR #1190](https://github.com/aovestdipaperino/tokensave/pull/1190) added project-local MCP registration, uninstall, dry-run planning, and doctor reporting. It merged into `master` as [`4be351ad`](https://github.com/aovestdipaperino/tokensave/commit/4be351ad7d6c7f21da9c20e9c3b6b4a418882340). The user-level adapter also installs the advisory shell hook and prompt rules and probes MCP startup in an indexed project.
 
 Codex loads trusted project `.codex/config.toml` layers ahead of user config. It also discovers project `.codex/hooks.json` and can combine matching hooks from multiple layers. Linked Git worktrees can inherit hook sources from the main checkout. Project trust and review of the exact hook definition are distinct. [Config precedence](https://learn.chatgpt.com/docs/config-file/config-basic) · [Hook discovery and trust](https://learn.chatgpt.com/docs/hooks)
 
+### Validation and remaining work
+
+The PR passed 17 focused Windows Rust tests, 11 wiki tests, and a Windows CLI smoke test covering local install, both doctor entry points, and uninstall.
+
+On Windows, the TokenSave binary from PR #1190 installed MCP into a disposable indexed Git repository. With an isolated `CODEX_HOME` and Codex CLI `0.171.0-alpha.13.2`, an untrusted app-server thread listed no TokenSave server. A trusted thread listed `tokensave_search` and called it through the app server. The result found the expected fixture symbol in `sample.py`.
+
+Project hook installation still needs validation of combined user and project hooks, linked worktree behavior, and review through `/hooks`. Native plugin packaging, validation on the supported Codex CLI release, and TokenSave release publication remain open.
+
+## GitHub Copilot CLI project scope
+
+The Copilot adapter writes its CLI registration to `$COPILOT_HOME/mcp-config.json` or `~/.copilot/mcp-config.json`. The same adapter manages VS Code and JetBrains configuration at user scope. It has no project install path. The earlier parity issue [#814](https://github.com/aovestdipaperino/tokensave/issues/814) is closed as not planned. [Copilot adapter](https://github.com/aovestdipaperino/tokensave/blob/4be351ad7d6c7f21da9c20e9c3b6b4a418882340/src/agents/integrations/copilot.rs)
+
+An isolated Windows probe with Copilot CLI `1.0.116` verified that `copilot mcp get tokensave` selects the user entry outside the repository and skips a workspace entry in an untrusted checkout. After the fixture checkout was trusted, Copilot selected a bare-map `.github/mcp.json` entry over user config, a root `.mcp.json` entry over `.github/mcp.json`, and a nearer `.mcp.json` from a child directory. The probe inspected configuration selection without starting a TokenSave server. [GitHub Copilot MCP configuration](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
+
 ### Proposed first slice
 
-- Add project-local MCP registration using the existing install scope and TOML handling. Write the registration at the selected repository root and preserve existing settings, including user-supplied timeouts and tool filters.
-- Support local uninstall and its dry run. Remove the integration entry according to the existing ownership and approval rules. Preserve unrelated tables and the configuration of other scopes.
-- Have doctor identify the project file and the user file independently. Keep startup probing bounded and retain Codex's project trust requirements.
-- Cover repeated install and uninstall, malformed TOML, paths with spaces, a custom `CODEX_HOME`, and the same server name at both scopes. Verify that a trusted Codex CLI session can discover and call a TokenSave tool and that an untrusted session skips the project registration.
-
-Project hook installation needs separate validation of combined user and project hooks, linked worktree behavior, and review through `/hooks`. Native plugin packaging and live activation on the supported Codex CLI version remain separate audit items. The available local executable reported `codex-cli 0.171.0-alpha.13.2`. The project-scope assessment uses source and official documentation, with live client behavior still to verify.
+- Use root `.github/mcp.json` for `tokensave install --local --agent copilot`. Claude Code and other adapters already write `.mcp.json`, which Copilot can also read.
+- Preserve both supported JSON shapes and unrelated entries. Use the same path for ownership-aware uninstall and dry run. Keep VS Code, JetBrains, and user-level Copilot configuration outside the project operation.
+- Have doctor report project registration, any visible shadowing by `.mcp.json`, and the role of Copilot folder trust. Verify that a trusted Copilot session can start the configured server and call `tokensave_search`.
