@@ -113,6 +113,38 @@ To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git
 For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md#connecting-to-your-agent).
 
 
+## Herdr workspaces
+
+[Herdr](https://herdr.dev/tui/docs/agent-automation/) starts Codex in the
+selected pane's working directory. Codex loads its usual TokenSave MCP
+registration and rules. Reuse an existing Codex registration. If Codex has
+none, choose either the user-level install or the project-local install
+above. Herdr needs no additional MCP configuration.
+
+Open the Herdr workspace at the checkout root and start Codex in a shell
+pane, or run `herdr agent start search --kind codex --pane <pane-id>`
+from a terminal in the same Herdr session. With project-local configuration,
+trust the checkout in Codex first. In Codex, run `/mcp` to check that
+TokenSave loaded, then ask Codex to use `tokensave_search` for a symbol in
+the checkout.
+
+TokenSave can [initialize on MCP startup](INDEXING.md#automatic-initialization)
+for eligible repositories. Implicit MCP starts in the same checkout share
+the initial index build. A waiting server times out after 30 seconds.
+For large repositories or when automatic initialization is off, run
+`tokensave init --no-git-hook` once before launching agents. Run the same
+command at each linked worktree root before launching agents there, so each
+worktree serves its own files. Use a registration that leaves the MCP
+working directory tied to the agent checkout. A registration pinned to the
+main checkout serves that checkout from every pane.
+
+For a Herdr workspace without TokenSave, use a Codex configuration without
+the registration or set `TOKENSAVE_DISABLE_SERVER=true` in the MCP entry's
+environment. To keep the integration and skip first-start indexing, set
+`TOKENSAVE_AUTO_INIT=0` for the MCP process. Codex still starts if the
+TokenSave executable is missing. Codex owns tool discovery, approvals,
+prompts, hooks, and reporting.
+
 ## Copilot CLI configuration
 
 TokenSave uses a nonempty `COPILOT_HOME` for Copilot CLI setup, health checks,
