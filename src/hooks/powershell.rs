@@ -33,14 +33,16 @@ pub(super) fn advice(command: &str, env: &HookEnv) -> Option<String> {
     let target = env.base()?.join(search.path).canonicalize().ok()?;
     let relative = target.strip_prefix(&root).ok()?.to_str()?;
     let symbol = bash_advisory_symbol(search.pattern, &target)?;
-    let mut args = serde_json::json!({ "query": symbol, "graph_root": root });
+    let mut args = serde_json::json!({ "query": symbol });
     if !relative.is_empty() {
         args["path_include"] = serde_json::json!([relative]);
     }
     let Range { start, end } = search.span;
     Some(format!(
         "PowerShell file search at UTF-8 bytes {start}..{end}. Use the native command for text matches. \
-         For indexed definitions in this scope, use tokensave_search {args} when available."
+         For indexed definitions in this scope, use tokensave_search {args} when available. \
+         If the MCP server is serving a different checkout, add graph_root={root_json} to those arguments.",
+        root_json = serde_json::json!(root)
     ))
 }
 

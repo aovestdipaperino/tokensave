@@ -377,3 +377,61 @@ async fn an_empty_root_array_is_rejected() {
         "an empty graph_root array must be an error, got {response:?}"
     );
 }
+
+#[tokio::test]
+async fn powershell_hook_search_arguments_work_for_served_and_explicit_roots() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let (tmp, server, neighbour, _) = served_with_two_neighbours().await;
+    for (root, symbol, explicit) in [
+        (tmp.path().join("served"), "served_only", false),
+        (std::path::PathBuf::from(neighbour), "alpha_only", true),
+    ] {
+        let mut hook = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+            .arg("hook-pre-tool-use-codex")
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start Codex hook");
+        let event = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "shell_command",
+            "cwd": root,
+            "tool_input": {
+                "shell": "pwsh",
+                "command": format!("Write-Output marker; Select-String '{symbol}' './src/lib.rs'")
+            }
+        });
+        write!(hook.stdin.take().expect("hook stdin"), "{event}").expect("send event");
+        let output = hook.wait_with_output().expect("read hook output");
+        assert!(output.status.success());
+        let output: Value = serde_json::from_slice(&output.stdout).expect("hook JSON");
+        let context = output["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("PowerShell advice");
+        let (_, suggested) = context
+            .split_once("tokensave_search ")
+            .expect("suggested call");
+        let mut args: Value = serde_json::Deserializer::from_str(suggested)
+            .into_iter()
+            .next()
+            .expect("search arguments")
+            .expect("valid JSON");
+        assert!(args.get("graph_root").is_none());
+        if explicit {
+            let (_, selector) = context
+                .split_once("graph_root=")
+                .expect("explicit selector");
+            args["graph_root"] = serde_json::Deserializer::from_str(selector)
+                .into_iter()
+                .next()
+                .expect("selector value")
+                .expect("valid JSON");
+        }
+        let response = call(&server, "tokensave_search", args).await;
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(text_of(&response).contains(symbol), "{response}");
+    }
+}
