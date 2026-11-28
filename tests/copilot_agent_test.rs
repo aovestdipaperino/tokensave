@@ -1496,3 +1496,37 @@ fn test_name_and_id() {
     assert_eq!(CopilotIntegration.name(), "GitHub Copilot");
     assert_eq!(CopilotIntegration.id(), "copilot");
 }
+
+#[test]
+fn uninstall_targets_the_copilot_home_override() {
+    let home = TempDir::new().expect("home");
+    let custom = home.path().join("custom-copilot");
+    let original = serde_json::json!({
+        "mcpServers": {
+            "tokensave": {"type": "local", "command": "tokensave", "args": ["serve"]},
+            "other": {"type": "local", "command": "other"}
+        }
+    });
+    let default = home.path().join(".copilot");
+    for dir in [&default, &custom] {
+        std::fs::create_dir(dir).expect("create Copilot home");
+        std::fs::write(dir.join("mcp-config.json"), original.to_string())
+            .expect("write MCP config");
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("COPILOT_HOME", &custom)
+        .args(["uninstall", "--agent", "copilot"])
+        .output()
+        .expect("run uninstall");
+    assert!(output.status.success(), "{output:?}");
+    let remaining = read_json(&custom.join("mcp-config.json"));
+    assert!(remaining["mcpServers"].get("tokensave").is_none());
+    assert_eq!(
+        remaining["mcpServers"]["other"],
+        original["mcpServers"]["other"]
+    );
+    assert_eq!(read_json(&default.join("mcp-config.json")), original);
+}

@@ -518,7 +518,7 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
     stats.tokens_consumed += pi.tokens_consumed;
     stats.coverage.extend(pi.coverage);
     // Copilot CLI ingestion from ~/.copilot/session-state
-    let copilot_root = home.join(".copilot").join("session-state");
+    let copilot_root = crate::agents::copilot_cli_dir(home).join("session-state");
     let copilot = crate::accounting::copilot::ingest_dir(gdb, &copilot_root).await;
 
     stats.turns_updated = stats.turns_updated.saturating_add(copilot.rows_changed);

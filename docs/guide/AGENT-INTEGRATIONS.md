@@ -107,6 +107,12 @@ To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git
 For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md#connecting-to-your-agent).
 
 
+## Copilot CLI configuration
+
+TokenSave uses a nonempty `COPILOT_HOME` for Copilot CLI setup, health checks,
+uninstall, and session statistics. The default is `~/.copilot`. VS Code and
+JetBrains use their own configuration directories.
+
 ## Codex CLI shell hook
 
 Run `tokensave install --agent codex` to register the shell hook in
