@@ -4,6 +4,8 @@ Create a stable Git tag that matches the version in Cargo.toml, then create a dr
 
 Run **Packaged release smoke** on a candidate branch for preflight without publishing. The **Release** workflow with a blank tag also runs the packaging gate and native builds without uploading release assets. To recover Windows assets for an existing public release that supports the smoke suite, dispatch **Release** with its tag and leave `publish_draft` off.
 
+To publish a tagged stable crate while Windows signing is pending, dispatch **Release** with the tag and `crate_only` enabled. The packaged smoke matrix still gates crates.io publication. Run the normal draft publication separately when signing is available. The release-drift check can report the missing public GitHub release in the interim.
+
 Run locally from the source checkout with Python 3.12 or newer and the pinned Rust toolchain.
 
 ```sh
