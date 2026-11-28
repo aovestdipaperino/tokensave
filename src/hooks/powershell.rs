@@ -1,7 +1,6 @@
 //! Bounded, advisory classification of PowerShell search commands.
 
 use std::ops::Range;
-use std::path::Path;
 
 use tree_sitter::{Node, Parser};
 
