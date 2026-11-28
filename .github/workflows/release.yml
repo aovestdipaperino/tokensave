@@ -11,6 +11,10 @@ on:
         description: Publish the existing draft after the packaged smoke matrix passes. With this off, a tag selects Windows recovery.
         default: false
         type: boolean
+      crate_only:
+        description: Publish only to crates.io from an existing stable tag after packaged smoke tests.
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ inputs.tag || github.ref }}
@@ -56,10 +60,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_TAG: ${{ inputs.tag }}
           PUBLISH_DRAFT: ${{ inputs.publish_draft }}
+          CRATE_ONLY: ${{ inputs.crate_only }}
         run: |
           set -euo pipefail
           TAG="$INPUT_TAG"; PUBLISH=false; WINDOWS_ONLY=false
-          if [[ -z "$TAG" ]]; then
+          if [[ "$CRATE_ONLY" == true ]]; then
+            if [[ "$PUBLISH_DRAFT" == true || ! "$TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+              echo "::error::Crate-only publication requires a stable tag and publish_draft=false."
+              exit 1
+            fi
+            version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+            if [[ "$TAG" != "v$version" ]]; then
+              echo "::error::Release tag does not match Cargo.toml version."
+              exit 1
+            fi
+          elif [[ -z "$TAG" ]]; then
             if [[ "$PUBLISH_DRAFT" == true ]]; then
               echo "::error::Provide a stable tag to publish a draft."
               exit 1
@@ -103,6 +118,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
+    if: inputs.crate_only == false
     needs: [setup, packaged-smoke]
     permissions:
       contents: write
@@ -590,7 +606,11 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    needs: [setup, publish-release]
+    needs: [setup, packaged-smoke, publish-release]
+    if: >-
+      !cancelled() && needs.setup.result == 'success'
+      && needs.packaged-smoke.result == 'success'
+      && (inputs.crate_only || needs.publish-release.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -600,8 +620,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Publish
-        run: cargo publish --locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          index=$(curl --fail --silent --show-error --retry 3 https://index.crates.io/to/ke/tokensave)
+          if jq -es --arg version "$version" 'any(.[]; .vers == $version and .yanked == false)' <<< "$index"; then
+            echo "tokensave $version is already available on crates.io."
+          else
+            cargo publish --locked
+          fi
         env:
+          TAG: ${{ needs.setup.outputs.tag }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   verify-published-crate:
