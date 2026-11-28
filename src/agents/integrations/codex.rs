@@ -2,7 +2,7 @@
 //! `OpenAI` Codex CLI agent integration.
 //!
 //! Handles registration of the tokensave MCP server in Codex's config
-//! file (`~/.codex/config.toml`), per-tool auto-approval settings,
+//! file (user or project `.codex/config.toml`), per-tool auto-approval settings,
 //! the PreToolUse shell hook, and prompt rules via `AGENTS.md`.
 
 use std::path::{Path, PathBuf};
@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::agents::codex_home_dir;
+use crate::agents::fs;
 use crate::errors::{Result, TokenSaveError};
 
 use super::*;
 
 /// Keys and defaults of a Codex `[mcp_servers.<name>]` table (#587).
 mod codex_config {
+    pub const CONFIG_FILE: &str = "config.toml";
     /// Seconds Codex waits for a server to finish `initialize` and
     /// `tools/list`; slower servers are dropped and their tools never appear.
     pub const STARTUP_TIMEOUT_SEC_KEY: &str = "startup_timeout_sec";
@@ -59,12 +60,24 @@ impl AgentIntegration for CodexIntegration {
         "codex"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let codex_dir = codex_home_dir(&ctx.home);
-        std::fs::create_dir_all(&codex_dir).ok();
-        let config_path = codex_dir.join("config.toml");
+        let codex_dir = config_dir(ctx);
+        std::fs::create_dir_all(&codex_dir).map_err(|error| TokenSaveError::Config {
+            message: format!("failed to create {}: {error}", codex_dir.display()),
+        })?;
+        let config_path = codex_dir.join(codex_config::CONFIG_FILE);
 
         install_mcp_server(&config_path, &ctx.tokensave_bin, ctx)?;
+        if ctx.is_local() {
+            crate::agent_note!(
+                "Start a new Codex session in the trusted project to load TokenSave."
+            );
+            return Ok(());
+        }
         install_shell_hook(
             &codex_dir.join(codex_config::HOOKS_FILE),
             &ctx.tokensave_bin,
@@ -82,13 +95,18 @@ impl AgentIntegration for CodexIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let codex_dir = codex_home_dir(&ctx.home);
-        let config_path = codex_dir.join("config.toml");
+        let codex_dir = config_dir(ctx);
+        let config_path = codex_dir.join(codex_config::CONFIG_FILE);
 
         if has_user_approvals(&config_path, ctx) {
             crate::agent_note!("  MCP entry kept because it contains user-managed tool approvals.");
         } else {
             uninstall_mcp_server(&config_path)?;
+        }
+
+        if ctx.is_local() {
+            crate::agent_note!("Start a new Codex session for changes to take effect.");
+            return Ok(());
         }
 
         let agents_md = codex_dir.join("AGENTS.md");
@@ -110,13 +128,17 @@ impl AgentIntegration for CodexIntegration {
         ctx: &InstallContext,
         plan: &mut crate::agents::uninstall::UninstallPlan,
     ) -> Result<()> {
-        let codex_dir = codex_home_dir(&ctx.home);
-        let config_path = codex_dir.join("config.toml");
+        let codex_dir = config_dir(ctx);
+        let config_path = codex_dir.join(codex_config::CONFIG_FILE);
 
         if has_user_approvals(&config_path, ctx) {
             plan.skipped("MCP server", "contains user-managed tool approvals");
         } else {
             plan.toml_mcp(&config_path);
+        }
+
+        if ctx.is_local() {
+            return Ok(());
         }
 
         let agents_md = codex_dir.join("AGENTS.md");
@@ -132,8 +154,9 @@ impl AgentIntegration for CodexIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
-        let codex_dir = codex_home_dir(&ctx.home);
-        let config_path = codex_dir.join("config.toml");
+        let codex_dir = fs::codex_home_dir(&ctx.home);
+        let config_path = codex_dir.join(codex_config::CONFIG_FILE);
+        self.healthcheck_project(dc, ctx);
         doctor_check_config(dc, &config_path, permissions_management_enabled(&ctx.home));
         if let Some(server) = load_toml_file(&config_path).ok().and_then(|config| {
             config
@@ -148,16 +171,44 @@ impl AgentIntegration for CodexIntegration {
         doctor_check_prompt(dc, &codex_dir);
     }
 
+    fn healthcheck_project(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) -> bool {
+        let project_dir = fs::codex_config_dir(&ctx.project_path);
+        let config_path = project_dir.join(codex_config::CONFIG_FILE);
+        if project_dir == fs::codex_home_dir(&ctx.home) || !config_path.exists() {
+            return false;
+        }
+
+        match load_toml_file(&config_path) {
+            Ok(config)
+                if config
+                    .get("mcp_servers")
+                    .and_then(|servers| servers.get("tokensave"))
+                    .is_some_and(toml::Value::is_table) =>
+            {
+                dc.pass(&format!(
+                    "Codex project MCP server registered in {} (requires Codex project trust)",
+                    config_path.display()
+                ));
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                dc.fail(&format!("{error}"));
+                false
+            }
+        }
+    }
+
     fn is_detected(&self, home: &Path) -> bool {
-        codex_home_dir(home).is_dir()
+        fs::codex_home_dir(home).is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(codex_home_dir(home).join("config.toml"))
+        Some(fs::codex_home_dir(home).join(codex_config::CONFIG_FILE))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let config = codex_home_dir(home).join("config.toml");
+        let config = fs::codex_home_dir(home).join(codex_config::CONFIG_FILE);
         if !config.exists() {
             return false;
         }
@@ -168,6 +219,13 @@ impl AgentIntegration for CodexIntegration {
                 .and_then(|v| v.get("tokensave"))
                 .is_some()
         })
+    }
+}
+
+fn config_dir(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => fs::codex_home_dir(&ctx.home),
+        InstallScope::Local { project_path } => fs::codex_config_dir(project_path),
     }
 }
 
@@ -186,7 +244,7 @@ fn has_user_approvals(path: &Path, ctx: &InstallContext) -> bool {
         })
 }
 
-/// Register MCP server and auto-approve tools in ~/.codex/config.toml.
+/// Register the MCP server and manage tool approvals in the selected scope.
 ///
 /// With `manage_permissions` false (#1067) the per-tool approvals are the
 /// user's: an existing `tools` table is carried over unchanged and none is
@@ -269,7 +327,11 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str, ctx: &InstallCont
         crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
     }
 
-    servers.insert("tokensave".to_string(), toml::Value::Table(server_table));
+    let server = toml::Value::Table(server_table);
+    if ctx.is_local() && servers.get("tokensave") == Some(&server) {
+        return Ok(());
+    }
+    servers.insert("tokensave".to_string(), server);
 
     write_toml_file(config_path, &config)?;
     crate::agent_note!(
@@ -289,7 +351,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
 // Uninstall helpers
 // ---------------------------------------------------------------------------
 
-/// Remove MCP server from ~/.codex/config.toml.
+/// Remove the MCP server from the selected configuration file.
 fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
     if !config_path.exists() {
         return Ok(());
@@ -312,7 +374,9 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
         table.remove("mcp_servers");
     }
     if table.is_empty() {
-        std::fs::remove_file(config_path).ok();
+        std::fs::remove_file(config_path).map_err(|error| TokenSaveError::Config {
+            message: format!("failed to remove {}: {error}", config_path.display()),
+        })?;
         crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             config_path.display()
