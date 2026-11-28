@@ -1,5 +1,12 @@
+mod constants;
+
+use std::fs::OpenOptions;
 use std::path::Path;
+use tokensave::auto_init::{self, Decision};
+use tokensave::errors::TokenSaveError;
 use tokensave::tokensave::TokenSave;
+
+use self::constants::{AUTO_INIT_LOCK_FILENAME, AUTO_INIT_LOCK_POLL, AUTO_INIT_LOCK_TIMEOUT};
 
 /// Opens an existing project, or tells the user to run `tokensave init` first.
 pub async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
@@ -15,60 +22,96 @@ pub async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Resul
 }
 
 /// Initializes and indexes the git repository at `cwd` when `auto_init`
-/// allows it (#876), then opens it for serving. `None` leaves `serve` on its
-/// usual fallbacks: the repository did not qualify, or initializing it failed.
+/// allows it (#876), then opens it for serving. Concurrent implicit MCP
+/// starts wait for the first initialization of the same checkout.
 ///
 /// The index is built before the server starts answering, so the first tool
 /// call sees a complete graph. [`tokensave::auto_init::decide`] caps the
 /// repository at `max_auto_sync_files`, which bounds that wait. Progress goes
 /// nowhere: stdout carries JSON-RPC, and a spinner would only flood the
 /// host's stderr log.
-pub async fn auto_initialize(cwd: &Path) -> Option<TokenSave> {
-    let root = match tokensave::auto_init::decide(cwd) {
-        tokensave::auto_init::Decision::Init(root) => root,
-        tokensave::auto_init::Decision::Skip(skip) => {
+pub async fn open_implicit_project(cwd: &Path) -> tokensave::errors::Result<TokenSave> {
+    let state = tokensave::config::get_tokensave_dir(cwd);
+    let lock_path = state.join(AUTO_INIT_LOCK_FILENAME);
+    // Read the decision before testing the lock path. A peer that publishes
+    // the database between those checks has already created its lock file.
+    let decision = auto_init::decide(cwd);
+    let may_initialize = matches!(decision, Decision::Init(_));
+    if !may_initialize && !lock_path.try_exists().map_err(auto_init_lock_error)? {
+        if let Decision::Skip(skip) = decision {
             if let Some(hint) = skip.hint(cwd) {
                 eprintln!("[tokensave] {hint}");
             }
-            return None;
         }
-    };
+        return ensure_initialized(cwd).await;
+    }
+
+    if may_initialize {
+        std::fs::create_dir_all(&state).map_err(auto_init_lock_error)?;
+    }
+    // Keep the inode in place so every opener locks the same file. The OS
+    // releases the lock when the handle closes, including on process exit.
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(may_initialize)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(auto_init_lock_error)?;
+    let deadline = tokio::time::Instant::now() + AUTO_INIT_LOCK_TIMEOUT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(AUTO_INIT_LOCK_POLL).await;
+            }
+            Err(error) => return Err(auto_init_lock_error(error)),
+        }
+    }
+    // Another pane may have initialized the checkout while we waited.
+    if let Decision::Init(root) = decision {
+        if matches!(
+            tokensave::config::discover_project(&root),
+            tokensave::config::ProjectDiscovery::Uninitialized { .. }
+        ) {
+            return initialize_for_serve(&root).await;
+        }
+    }
+    ensure_initialized(cwd).await
+}
+
+fn auto_init_lock_error(error: impl std::fmt::Display) -> TokenSaveError {
+    TokenSaveError::SyncLock {
+        message: format!("could not acquire the MCP initialization lock: {error}"),
+    }
+}
+
+async fn initialize_for_serve(root: &Path) -> tokensave::errors::Result<TokenSave> {
     eprintln!(
         "[tokensave] no index at '{}'; initializing it (auto_init)",
         root.display()
     );
     let indexed = async {
-        let pin = crate::commands::prepare_initial_cpu_usage(&root, None)?;
-        let cg = TokenSave::init_with_cpu_usage(&root, pin).await?;
+        let pin = crate::commands::prepare_initial_cpu_usage(root, None)?;
+        let cg = TokenSave::init_with_cpu_usage(root, pin).await?;
         // `init` applies the same default when stdin is not a terminal. State
         // relocated out of the tree (#919) needs no exclusion.
-        if tokensave::config::project_state_is_in_repo(&root)
-            && !tokensave::config::is_in_gitignore(&root)
+        if tokensave::config::project_state_is_in_repo(root)
+            && !tokensave::config::is_in_gitignore(root)
         {
-            tokensave::config::add_to_git_info_exclude(&root);
+            tokensave::config::add_to_git_info_exclude(root);
         }
         let result = cg.index_all().await?;
         crate::global::update_global_db(&cg).await;
         tokensave::errors::Result::Ok(result)
     }
     .await;
-    match indexed {
-        Ok(result) => eprintln!(
-            "[tokensave] auto_init indexed {} files ({} nodes) in {}ms",
-            result.file_count, result.node_count, result.duration_ms
-        ),
-        Err(e) => {
-            eprintln!("[tokensave] auto_init failed: {e}");
-            return None;
-        }
-    }
-    match TokenSave::open(&root).await {
-        Ok(cg) => Some(cg),
-        Err(e) => {
-            eprintln!("[tokensave] auto_init: could not open the new index: {e}");
-            None
-        }
-    }
+    let result = indexed.inspect_err(|e| eprintln!("[tokensave] auto_init failed: {e}"))?;
+    eprintln!(
+        "[tokensave] auto_init indexed {} files ({} nodes) in {}ms",
+        result.file_count, result.node_count, result.duration_ms
+    );
+    TokenSave::open(root).await
 }
 
 /// Fallback for `serve`: when CWD-based discovery fails inside a linked git

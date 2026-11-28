@@ -385,22 +385,21 @@ fn wait_for_index_completion(root: &Path, deadline: Instant) {
     }
 }
 
-#[test]
-fn serve_initializes_a_new_repository_before_answering() {
-    let sandbox = Sandbox::new();
-    let repo = new_repository();
-
-    let mut child = sandbox
+fn spawn_serve(sandbox: &Sandbox, root: &Path) -> std::process::Child {
+    sandbox
         .apply(
             Command::new(env!("CARGO_BIN_EXE_tokensave"))
                 .arg("serve")
-                .current_dir(repo.path()),
+                .current_dir(root),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+fn search_fresh_index(mut child: std::process::Child) -> String {
     let stdout = child.stdout.take().unwrap();
     let (tx, lines) = mpsc::channel();
     std::thread::spawn(move || {
@@ -438,7 +437,6 @@ fn serve_initializes_a_new_repository_before_answering() {
         }),
     );
     assert!(init.get("result").is_some(), "{init}");
-    assert!(is_initialized(repo.path()));
     let search = request(
         2,
         "tools/call",
@@ -450,8 +448,33 @@ fn serve_initializes_a_new_repository_before_answering() {
     );
 
     drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    stderr(&output)
+}
+
+#[test]
+fn serve_initializes_a_new_repository_before_answering() {
+    let sandbox = Sandbox::new();
+    let repo = new_repository();
+    search_fresh_index(spawn_serve(&sandbox, repo.path()));
+    assert!(is_initialized(repo.path()));
+}
+
+#[test]
+fn simultaneous_mcp_servers_share_one_initial_index() {
+    let sandbox = Sandbox::new();
+    let repo = new_repository();
+    let first = spawn_serve(&sandbox, repo.path());
+    let second = spawn_serve(&sandbox, repo.path());
+    let logs = [search_fresh_index(first), search_fresh_index(second)];
+    assert_eq!(
+        logs.iter()
+            .filter(|log| log.contains("auto_init indexed"))
+            .count(),
+        1,
+        "{logs:?}"
+    );
 }
 
 #[test]

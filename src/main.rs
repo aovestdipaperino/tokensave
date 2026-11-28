@@ -1643,17 +1643,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // `auto_init` allows it, before any fallback can pick another
             // project. Only for a CWD-discovered root: an explicit `--path`
             // keeps its no-default-project behavior (#606).
-            let auto_initialized = if explicit_path || TokenSave::is_initialized(&project_path) {
-                None
+            let opened = if explicit_path {
+                serve::ensure_initialized(&project_path).await
             } else {
-                serve::auto_initialize(&project_path).await
-            };
-            let opened = match auto_initialized {
-                Some(cg) => Ok(cg),
-                None => serve::ensure_initialized(&project_path).await,
+                serve::open_implicit_project(&project_path).await
             };
             let cg = match opened {
                 Ok(cg) => Some(cg),
+                Err(e @ tokensave::errors::TokenSaveError::SyncLock { .. }) if !explicit_path => {
+                    return Err(e);
+                }
                 // An explicit `--path` names the project to serve. A folder
                 // without an index gets no default project rather than
                 // whichever registered project a fallback would pick, which
