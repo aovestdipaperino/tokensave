@@ -17,14 +17,23 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::errors::Result;
+use crate::agents::uninstall::{self, UninstallOutput, UninstallPlan};
+use crate::errors::{Result, TokenSaveError};
 
 use super::*;
 
 /// GitHub Copilot agent.
 pub struct CopilotIntegration;
+
+mod project_config {
+    pub(super) const GITHUB_DIR: &str = ".github";
+    pub(super) const MCP_FILE: &str = "mcp.json";
+    pub(super) const OVERRIDE_FILE: &str = ".mcp.json";
+    pub(super) const SERVERS_KEY: &str = "mcpServers";
+    pub(super) const SERVER_NAME: &str = "tokensave";
+}
 
 impl AgentIntegration for CopilotIntegration {
     fn name(&self) -> &'static str {
@@ -35,7 +44,14 @@ impl AgentIntegration for CopilotIntegration {
         "copilot"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
+        if let InstallScope::Local { project_path } = &ctx.scope {
+            return install_project_mcp(&project_mcp_path(project_path), &ctx.tokensave_bin);
+        }
         let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home)
             .join("User")
             .join("mcp.json");
@@ -102,6 +118,16 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
+        if ctx.is_local() {
+            let mut plan = UninstallPlan::for_scope(&ctx.scope);
+            self.plan_uninstall(ctx, &mut plan)?;
+            if plan.apply(UninstallOutput::default()).failed > 0 {
+                return Err(TokenSaveError::Config {
+                    message: "Could not remove project-local Copilot MCP registration".into(),
+                });
+            }
+            return Ok(());
+        }
         let vscode_settings_path = super::vscode_data_dir(&ctx.home)
             .join("User")
             .join("settings.json");
@@ -150,6 +176,22 @@ impl AgentIntegration for CopilotIntegration {
         ctx: &InstallContext,
         plan: &mut crate::agents::uninstall::UninstallPlan,
     ) -> Result<()> {
+        if let InstallScope::Local { project_path } = &ctx.scope {
+            plan.json(
+                "MCP server",
+                &project_mcp_path(project_path),
+                false,
+                |config| {
+                    let keys = if config.get(project_config::SERVERS_KEY).is_some() {
+                        &[project_config::SERVERS_KEY][..]
+                    } else {
+                        &[]
+                    };
+                    uninstall::remove_mcp(config, keys)
+                },
+            );
+            return Ok(());
+        }
         let vscode_settings_path = super::vscode_data_dir(&ctx.home)
             .join("User")
             .join("settings.json");
@@ -205,6 +247,7 @@ impl AgentIntegration for CopilotIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
+        let project_configured = self.healthcheck_project(dc, ctx);
         let mut configured = 0usize;
         for surface in copilot_surfaces(&ctx.home) {
             match surface.state() {
@@ -229,12 +272,40 @@ impl AgentIntegration for CopilotIntegration {
                 }
             }
         }
-        if configured == 0 {
+        if configured == 0 && !project_configured {
             dc.fail(
                 "tokensave is not configured for any GitHub Copilot surface (VS Code, \
                  VS Code Insiders, Copilot CLI, JetBrains) — run `tokensave install --agent copilot`",
             );
         }
+    }
+
+    fn healthcheck_project(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) -> bool {
+        let path = project_mcp_path(&ctx.project_path);
+        let config = match load_json_file_strict(&path) {
+            Ok(config) => config,
+            Err(error) => {
+                dc.fail(&error.to_string());
+                return false;
+            }
+        };
+        if !project_server(&config).is_some_and(Value::is_object) {
+            return false;
+        }
+        dc.pass(&format!(
+            "Copilot project MCP server registered in {} (requires Copilot folder trust)",
+            path.display()
+        ));
+        let override_path = ctx.project_path.join(project_config::OVERRIDE_FILE);
+        if load_json_file_strict(&override_path)
+            .is_ok_and(|config| project_server(&config).is_some())
+        {
+            dc.warn(&format!(
+                "Copilot prefers the TokenSave entry in {}",
+                override_path.display()
+            ));
+        }
+        true
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -328,6 +399,73 @@ impl AgentIntegration for CopilotIntegration {
             || cli_has_tokensave
             || jetbrains_has_tokensave
     }
+}
+
+fn project_mcp_path(root: &Path) -> PathBuf {
+    root.join(project_config::GITHUB_DIR)
+        .join(project_config::MCP_FILE)
+}
+
+fn project_server(config: &Value) -> Option<&Value> {
+    config
+        .get(project_config::SERVERS_KEY)
+        .unwrap_or(config)
+        .get(project_config::SERVER_NAME)
+}
+
+fn install_project_mcp(path: &Path, tokensave_bin: &str) -> Result<()> {
+    let mut config = load_json_file_strict(path)?;
+    if config.as_object().is_some_and(serde_json::Map::is_empty) {
+        config[project_config::SERVERS_KEY] = json!({});
+    }
+    let servers = if config.get(project_config::SERVERS_KEY).is_some() {
+        &mut config[project_config::SERVERS_KEY]
+    } else {
+        &mut config
+    };
+    let malformed = || TokenSaveError::Config {
+        message: format!("Expected an MCP configuration object in {}", path.display()),
+    };
+    let servers = servers.as_object_mut().ok_or_else(malformed)?;
+    let mut entry = servers
+        .get(project_config::SERVER_NAME)
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if !entry.is_object() {
+        return Err(malformed());
+    }
+    if let Some(command) = entry.get("command") {
+        if !uninstall::is_tokensave_command(command.as_str()) {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "Existing TokenSave server name in {} uses a different command",
+                    path.display()
+                ),
+            });
+        }
+    } else if !entry.as_object().is_some_and(serde_json::Map::is_empty) {
+        return Err(malformed());
+    }
+    let binary = crate::agents::preserve_mcp_command(entry.get("command"), tokensave_bin);
+    entry["type"] = json!("stdio");
+    entry["command"] = json!(binary);
+    entry["args"] = json!(["serve"]);
+    if servers.get(project_config::SERVER_NAME) == Some(&entry) {
+        return Ok(());
+    }
+    servers.insert(project_config::SERVER_NAME.into(), entry);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| TokenSaveError::Config {
+            message: format!("Cannot create {}: {error}", parent.display()),
+        })?;
+    }
+    let backup = backup_config_file(path)?;
+    safe_write_json_file(path, &config, backup.as_deref())?;
+    crate::agent_note!(
+        "Registered Copilot project MCP in {}. Start Copilot in a trusted checkout.",
+        path.display()
+    );
+    Ok(())
 }
 
 /// Register MCP server in VS Code's dedicated `User/mcp.json` (1.102+, GA

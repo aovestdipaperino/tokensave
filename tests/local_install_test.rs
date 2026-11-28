@@ -5,6 +5,71 @@ use tokensave::agents::{DoctorCounters, HealthcheckContext, InstallContext, Inst
 use crate::common::read_json;
 
 #[test]
+fn copilot_local_preserves_bare_configuration_and_shared_mcp() {
+    let project = TempDir::new().expect("project");
+    let home = TempDir::new().expect("home");
+    let directory = project.path().join(".github");
+    std::fs::create_dir(&directory).expect("create GitHub configuration directory");
+    let path = directory.join("mcp.json");
+    let shared_path = project.path().join(".mcp.json");
+    let original = r#"{"other":{"command":"other"},"tokensave":{"command":"tokensave","tools":["tokensave_search"]}}"#;
+    let shared = r#"{"mcpServers":{"tokensave":{"command":"tokensave","args":["serve"]}}}"#;
+    std::fs::write(&path, original).expect("write bare workspace configuration");
+    std::fs::write(&shared_path, shared).expect("write shared MCP registration");
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "path with spaces/tokensave".into(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: project.path().to_path_buf(),
+        },
+        force_permission_style: false,
+    };
+    let agent = get_integration("copilot").expect("Copilot integration");
+    agent.install(&ctx).expect("install Copilot workspace MCP");
+    let installed = std::fs::read(&path).expect("read installed configuration");
+    agent.install(&ctx).expect("repeat installation");
+    assert_eq!(
+        std::fs::read(&path).expect("read reinstalled configuration"),
+        installed
+    );
+    assert_eq!(
+        read_json(&path)["tokensave"]["tools"][0],
+        "tokensave_search"
+    );
+    assert_eq!(read_json(&path)["tokensave"]["args"][0], "serve");
+    let mut counters = DoctorCounters::default();
+    assert!(agent.healthcheck_project(
+        &mut counters,
+        &HealthcheckContext {
+            home: home.path().to_path_buf(),
+            project_path: project.path().to_path_buf(),
+        }
+    ));
+    assert_eq!(counters.warnings, 1);
+    agent
+        .uninstall(&ctx)
+        .expect("remove workspace registration");
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({"other":{"command":"other"}})
+    );
+    assert_eq!(
+        std::fs::read_to_string(&shared_path).expect("read shared entry"),
+        shared
+    );
+    assert!(!home.path().join(".copilot").exists());
+    let collision = r#"{"mcpServers":{"tokensave":{"command":"unrelated"}}}"#;
+    std::fs::write(&path, collision).expect("write user-owned entry");
+    assert!(agent.install(&ctx).is_err());
+    agent.uninstall(&ctx).expect("preserve user-owned server");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read user-owned entry"),
+        collision
+    );
+}
+
+#[test]
 fn codex_local_mcp_install_and_uninstall_preserve_other_settings() {
     let home = TempDir::new().expect("create test home");
     let project = TempDir::new().expect("create test project");
